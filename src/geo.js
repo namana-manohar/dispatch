@@ -80,6 +80,18 @@ export async function geocode(address, city) {
     const p = await photon(a, near)
     if (p) return p
   } catch (e) { if (firstError) throw firstError }
+  // Last resort for shop names: the server asks Gemini (Google Maps data) for
+  // the address. Only in the browser, and only if the server has a key.
+  if (typeof window !== 'undefined') {
+    try {
+      const url = `/api/place?q=${encodeURIComponent(a)}&city=${encodeURIComponent(city || '')}${near ? `&near=${near.lat},${near.lng}` : ''}`
+      const res = await fetch(url)
+      if (res.ok) {
+        const d = await res.json()
+        if (d.found && d.lat != null) return { lat: d.lat, lng: d.lng, label: d.label || d.address }
+      }
+    } catch { /* server route not available */ }
+  }
   return null
 }
 
