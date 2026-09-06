@@ -226,11 +226,11 @@ export default function App() {
     // Pasted coordinates "12.93, 77.58" work without a lookup
     const m = state.depot.address.match(/^\s*(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$/)
     if (m) { setDepotField({ lat: parseFloat(m[1]), lng: parseFloat(m[2]) }); setLocating(''); return }
-    setLocating('Looking up the Loading point…')
+    setLocating('Looking up the Starting point…')
     try {
       const hit = await geocode(state.depot.address, state.city)
       if (hit) setDepotField({ lat: hit.lat, lng: hit.lng })
-      setLocating(hit ? '' : 'Loading point not found. Try a fuller address.')
+      setLocating(hit ? '' : 'Starting point not found. Try a fuller address.')
     } catch (e) { setLocating(e.message) }
   }
   const pinClient = (id, hit) => setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === id ? { ...c, lat: hit.lat, lng: hit.lng } : c)) }))
@@ -401,8 +401,8 @@ export default function App() {
     return (
       <div className="auth-wrap">
         <div className="auth-card start-card">
-          <h1>Where do the boys start from?</h1>
-          <p className="hint" style={{ marginTop: 0 }}>The loading point: shop or godown. Every route starts and ends here. Saved permanently until you change it.</p>
+          <h1>Starting point</h1>
+          <p className="hint" style={{ marginTop: 0 }}>Where the boys load and start from, shop or godown. Every route starts and ends here. Saved until you change it.</p>
           <div className="row">
             <input placeholder="Address (or paste coordinates like 12.93, 77.58)" value={state.depot.address} autoFocus
               onChange={(e) => setDepotField({ address: e.target.value })}
@@ -600,7 +600,7 @@ export default function App() {
 
         <main className="board">
           <div className={`loading-point${hasCoords(state.depot) ? '' : ' unset'}`}>
-            <span className="lp-label">Loading point</span>
+            <span className="lp-label">Starting point</span>
             <input placeholder="Where the boys load and start from (address)" value={state.depot.address}
               onChange={(e) => setDepotField({ address: e.target.value, lat: null, lng: null })}
               onKeyDown={(e) => e.key === 'Enter' && locateDepot()} />
@@ -632,7 +632,7 @@ export default function App() {
                 </h2>
                 <p>
                   {state.drops.length} drops · {totalBoxes} boxes ({sizeBreakdown(state.drops)}) · at most {state.maxStops} stops and {state.maxHours}h per person
-                  {!hasCoords(state.depot) && ' · loading point not set, so routes start at the first stop'}
+                  {!hasCoords(state.depot) && ' · starting point not set, so routes start at the first stop'}
                 </p>
                 {plan.autoRoutes.length > 0 && (
                   <p className={plan.autoRoutes.length > state.autosToday ? 'warn-text' : ''}>
