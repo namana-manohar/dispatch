@@ -460,3 +460,6 @@ a.btn-outline, a.btn-accent { text-decoration: none; display: inline-flex; align
 .suggest-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
 .suggest-list li:hover { background: var(--accent-dim); }
 .suggest-list li small { color: var(--muted); font-size: 11px; }
+.map-frame { position: relative; }
+.center-pin { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%); z-index: 500; pointer-events: none; display: flex; flex-direction: column; align-items: center; }
+.center-pin-tail { width: 2px; height: 14px; background: #F2A93B; }

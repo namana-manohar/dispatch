@@ -4,7 +4,6 @@ import 'leaflet/dist/leaflet.css'
 import { geocode, currentPosition, hasCoords } from './geo.js'
 import { googleEnabled, googleAutocomplete, googlePlaceDetails } from './google.js'
 
-const pinIcon = L.divIcon({ className: 'stop-marker', html: '<div class="stop-pin" style="background:#F2A93B">●</div>', iconSize: [28, 28], iconAnchor: [14, 14] })
 
 // Pick a point like in a maps app: search a name or address, use the phone's
 // location, or drag the pin to the exact spot. Calls onPick({lat, lng, address}).
@@ -41,20 +40,18 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
     try {
       const hit = await googlePlaceDetails(sug.placeId)
       place(hit, 17)
-      setMsg(`${hit.label}. Drag the pin if it is not exact.`)
+      setMsg(`${hit.label}. Move the map if the pin is not exact.`)
     } catch (e) { setMsg(e.message) } finally { setBusy(false) }
   }
 
+  // The pin is fixed in the middle of the map; moving the map moves the pin.
+  const [touched, setTouched] = useState(hasCoords(initial))
   const place = (p, zoom) => {
     setPoint(p)
+    setTouched(true)
+    markerRef.current = true
     const map = mapRef.current
     if (!map) return
-    if (!markerRef.current) {
-      markerRef.current = L.marker([p.lat, p.lng], { icon: pinIcon, draggable: true }).addTo(map)
-      markerRef.current.on('dragend', () => { const ll = markerRef.current.getLatLng(); setPoint({ lat: ll.lat, lng: ll.lng }) })
-    } else {
-      markerRef.current.setLatLng([p.lat, p.lng])
-    }
     map.setView([p.lat, p.lng], zoom || Math.max(map.getZoom(), 16))
   }
 
@@ -65,6 +62,8 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
       maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map)
     map.on('click', (e) => place({ lat: e.latlng.lat, lng: e.latlng.lng }))
+    map.on('dragstart', () => { setTouched(true); markerRef.current = true })
+    map.on('moveend', () => { const c = map.getCenter(); setPoint((prev) => (markerRef.current ? { lat: c.lat, lng: c.lng } : prev)) })
     mapRef.current = map
     if (point) place(point, 16)
     else {
@@ -83,7 +82,7 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
     setMsg('Searching…')
     try {
       const hit = await geocode(query, city)
-      if (hit) { place(hit, 17); setMsg(`Found: ${hit.label || query}. Drag the pin if it is not exact.`) }
+      if (hit) { place(hit, 17); setMsg(`Found: ${hit.label || query}. Move the map if the pin is not exact.`) }
       else setMsg('Not found. Tap the spot on the map, or use your location while standing there.')
     } catch (e) { setMsg(e.message) } finally { setBusy(false) }
   }
@@ -94,7 +93,7 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
     try {
       const p = await currentPosition()
       place(p, 17)
-      setMsg(`Your location (about ${Math.round(p.accuracy)} m accuracy). Drag the pin if needed.`)
+      setMsg(`Your location (about ${Math.round(p.accuracy)} m accuracy). Move the map if needed.`)
     } catch (e) { setMsg(e.message) } finally { setBusy(false) }
   }
 
@@ -121,11 +120,14 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
             </ul>
           )}
         </div>
-        <p className="hint">{msg || 'Search, or tap the exact spot on the map. You can drag the pin.'}</p>
-        <div ref={mapEl} className="map-canvas" />
+        <p className="hint">{msg || 'Search, or move the map until the pin sits on the exact spot. Pinch or scroll to zoom in.'}</p>
+        <div className="map-frame">
+          <div ref={mapEl} className="map-canvas" />
+          <div className="center-pin" aria-hidden="true"><div className="stop-pin" style={{ background: '#F2A93B' }}>●</div><div className="center-pin-tail" /></div>
+        </div>
         <div className="row">
-          <button className="btn-accent" disabled={!point} onClick={() => onPick({ ...point, address: query.trim() })}>
-            {point ? `Save this spot${query.trim() ? ` as "${query.trim()}"` : ''}` : 'Place the pin first'}
+          <button className="btn-accent" disabled={!point || !touched} onClick={() => onPick({ ...point, address: query.trim() })}>
+            {point && touched ? `Save this spot${query.trim() ? ` as "${query.trim()}"` : ''}` : 'Move the map to the spot first'}
           </button>
           <button className="btn-outline" onClick={onClose}>Cancel</button>
         </div>
