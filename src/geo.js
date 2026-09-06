@@ -5,16 +5,85 @@
 export const hasCoords = (d) =>
   d && typeof d.lat === 'number' && typeof d.lng === 'number' && !isNaN(d.lat) && !isNaN(d.lng)
 
-export async function geocode(address, city) {
-  const a = (address || '').trim()
-  if (!a) return null
-  const q = city && !a.toLowerCase().includes(city.toLowerCase()) ? `${a}, ${city}` : a
+// Coordinates pasted as "12.93, 77.58" or inside a Google Maps link
+// (…/@12.93,77.58,17z, ?q=12.93,77.58, …!3d12.93!4d77.58).
+export function parseCoords(text) {
+  const t = (text || '').trim()
+  let m = t.match(/^(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)$/)
+  if (!m) m = t.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/)
+  if (!m) m = t.match(/[?&](?:q|query|ll|center)=(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/)
+  if (!m) m = t.match(/!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/)
+  if (!m) return null
+  return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) }
+}
+
+async function nominatim(q) {
   const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`
-  const res = await fetch(url, { headers: { Accept: 'application/json', 'Accept-Language': 'en' } })
+  const res = await fetch(url, { headers: { Accept: 'application/json', 'Accept-Language': 'en', ...(typeof window === 'undefined' ? { 'User-Agent': 'dispatch-planner/1.0' } : {}) } })
   if (!res.ok) throw new Error(`Address lookup failed (${res.status})`)
   const data = await res.json()
   if (!data.length) return null
   return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), label: data[0].display_name }
+}
+
+// Photon (komoot) is better at partial names and shop names; biased to a point.
+async function photon(q, near) {
+  let url = `https://photon.komoot.io/api/?limit=1&lang=en&q=${encodeURIComponent(q)}`
+  if (near) url += `&lat=${near.lat}&lon=${near.lng}&location_bias_scale=0.6`
+  const res = await fetch(url)
+  if (!res.ok) return null
+  const data = await res.json()
+  const f = data.features?.[0]
+  if (!f) return null
+  const p = f.properties || {}
+  const label = [p.name, p.street, p.district, p.city, p.state].filter(Boolean).join(', ')
+  // Fuzzy matches like "Shree Hanuman Temple Road" for "shree biomed" would
+  // pin the wrong spot: every meaningful word of the query must appear.
+  const hay = label.toLowerCase()
+  const words = q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4)
+  if (words.length && !words.every((w) => hay.includes(w))) return null
+  return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label }
+}
+
+const cityCache = {}
+async function cityPoint(city) {
+  if (!city) return null
+  if (cityCache[city] !== undefined) return cityCache[city]
+  try { cityCache[city] = await nominatim(city) } catch { cityCache[city] = null }
+  return cityCache[city]
+}
+
+// Address or place name -> point. Tries pasted coordinates / Maps links,
+// then OpenStreetMap by address, then a name-friendly search near the city.
+export async function geocode(address, city) {
+  const a = (address || '').trim()
+  if (!a) return null
+  const direct = parseCoords(a)
+  if (direct) return { ...direct, label: a }
+  const withCity = city && !a.toLowerCase().includes(city.toLowerCase()) ? `${a}, ${city}` : a
+  let hit = null
+  let firstError = null
+  try { hit = await nominatim(withCity) } catch (e) { firstError = e }
+  if (hit) return hit
+  const near = await cityPoint(city)
+  await sleep(firstError ? 0 : 1000)
+  try {
+    const p = await photon(a, near)
+    if (p) return p
+  } catch (e) { if (firstError) throw firstError }
+  return null
+}
+
+// Where this device is right now (the shop, when standing in it).
+export function currentPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('This device cannot share its location.'))
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+      (err) => reject(new Error(err.code === 1 ? 'Location permission was refused. Allow it in the browser and try again.' : 'Could not get the location. Try again or pick on the map.')),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    )
+  })
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

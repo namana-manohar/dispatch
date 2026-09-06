@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { parseText, parseFile } from './parseImport.js'
-import { geocode, sleep, googleDirectionsLegs, routeShareText, whatsappUrl } from './geo.js'
+import { geocode, sleep, googleDirectionsLegs, routeShareText, whatsappUrl, currentPosition } from './geo.js'
 import { planRoutes, hasCoords } from './planner.js'
 import RouteMap from './RouteMap.jsx'
 import Auth from './Auth.jsx'
+import LocationPicker from './LocationPicker.jsx'
 import { supabase, cloudEnabled, loadRemote, saveRemote } from './supabase.js'
 
 const STORAGE_KEY = 'dispatch-planner-v4'
@@ -114,6 +115,7 @@ export default function App() {
   const [mapRouteNo, setMapRouteNo] = useState(null)
   const [locating, setLocating] = useState('')
   const [showSetup, setShowSetup] = useState(false)
+  const [picker, setPicker] = useState(null) // { kind: 'depot' } | { kind: 'client', id }
   const fileRef = useRef(null)
 
   // --- cloud account (only when Supabase is configured)
@@ -230,10 +232,24 @@ export default function App() {
     try {
       const hit = await geocode(state.depot.address, state.city)
       if (hit) setDepotField({ lat: hit.lat, lng: hit.lng })
-      setLocating(hit ? '' : 'Starting point not found. Try a fuller address.')
+      setLocating(hit ? '' : 'Not found by name. Use "Use my location" if you are there, or "Pick on map".')
+    } catch (e) { setLocating(e.message) }
+  }
+  const depotFromDevice = async () => {
+    setLocating('Getting this phone\'s location…')
+    try {
+      const p = await currentPosition()
+      setDepotField({ lat: p.lat, lng: p.lng, address: state.depot.address.trim() || 'My location' })
+      setLocating('')
     } catch (e) { setLocating(e.message) }
   }
   const pinClient = (id, hit) => setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === id ? { ...c, lat: hit.lat, lng: hit.lng } : c)) }))
+  const applyPick = ({ lat, lng, address }) => {
+    if (picker?.kind === 'depot') setDepotField({ lat, lng, address: address || state.depot.address || 'Starting point' })
+    if (picker?.kind === 'client') setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === picker.id ? { ...c, lat, lng } : c)) }))
+    setPicker(null)
+    setLocating('')
+  }
   const locateClient = async (id) => {
     const c = clientById(id)
     if (!c) return
@@ -241,7 +257,7 @@ export default function App() {
     try {
       const hit = await geocode(c.address || c.name, state.city)
       if (hit) pinClient(id, hit)
-      setLocating(hit ? '' : `Could not find "${c.address || c.name}". Edit the address and try again.`)
+      setLocating(hit ? '' : `Could not find "${c.address || c.name}". Press Pin to place it on the map.`)
     } catch (e) { setLocating(e.message) }
   }
   const locateAll = async () => {
@@ -413,8 +429,14 @@ export default function App() {
             <input placeholder="City (helps the lookup)" value={state.city}
               onChange={(e) => setState((s) => ({ ...s, city: e.target.value }))} />
           </div>
+          <div className="row">
+            <button className="btn-outline" onClick={depotFromDevice}>Use my location</button>
+            <button className="btn-outline" onClick={() => setPicker({ kind: 'depot' })}>Pick on map</button>
+          </div>
+          <p className="hint">Standing in the shop? "Use my location" is the quickest. Otherwise search or pick the spot on the map; you can also paste a Google Maps link.</p>
           {locating && <p className="hint warn">{locating}</p>}
           {session && <button className="btn-link" onClick={signOut}>Sign out</button>}
+          {picker && <LocationPicker title="Starting point" initial={state.depot} city={state.city} onPick={applyPick} onClose={() => setPicker(null)} />}
         </div>
       </div>
     )
@@ -499,6 +521,7 @@ export default function App() {
                     </div>
                     <div className="row">
                       {!hasCoords(c) && <button className="btn-ghost" onClick={() => locateClient(c.id)} title="Find this address on the map">Locate</button>}
+                      <button className="btn-ghost" onClick={() => setPicker({ kind: 'client', id: c.id })} title="Pick or correct this client's spot on a map">Pin</button>
                       <button className="btn-accent btn-small" onClick={() => openSend(c)}>Send today</button>
                       <button className="btn-ghost" onClick={() => removeClient(c.id)}>×</button>
                     </div>
@@ -607,6 +630,7 @@ export default function App() {
             {hasCoords(state.depot)
               ? <span className="lp-ok">on map · every route starts and ends here</span>
               : <button className="btn-accent btn-small" onClick={locateDepot} disabled={!state.depot.address.trim()}>Locate</button>}
+            <button className="btn-ghost" onClick={() => setPicker({ kind: 'depot' })} title="Move the starting point on a map">Map</button>
           </div>
           {locating && locating.includes('Loading') && <p className="hint warn">{locating}</p>}
 
@@ -737,6 +761,16 @@ export default function App() {
           })}
         </main>
       </div>
+
+      {picker && (
+        <LocationPicker
+          title={picker.kind === 'depot' ? 'Starting point' : `Pin: ${clientLabel(clientById(picker.id) || {}) || 'client'}`}
+          initial={picker.kind === 'depot' ? state.depot : clientById(picker.id)}
+          city={state.city}
+          onPick={applyPick}
+          onClose={() => setPicker(null)}
+        />
+      )}
 
       {mapRoute && (
         <RouteMap
