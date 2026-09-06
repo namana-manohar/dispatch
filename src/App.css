@@ -445,3 +445,11 @@ a.btn-outline, a.btn-accent { text-decoration: none; display: inline-flex; align
 .urgent-toggle { opacity: 0.35; }
 .urgent-toggle.on { opacity: 1; color: var(--accent); }
 .stop-time.late strong, .stop-time.late small { color: var(--warn); }
+
+/* --- account & first-run --- */
+.auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.auth-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 26px 28px; width: min(440px, 100%); }
+.auth-card .field input { width: 100%; }
+.account-bar { display: flex; align-items: center; gap: 14px; justify-content: flex-end; padding: 6px 28px; font-size: 12px; color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.start-card h1 { font-size: 20px; margin-bottom: 6px; }
+.start-card .row input { flex: 1; }

@@ -3,6 +3,8 @@ import { parseText, parseFile } from './parseImport.js'
 import { geocode, sleep, googleDirectionsLegs, routeShareText, whatsappUrl } from './geo.js'
 import { planRoutes, hasCoords } from './planner.js'
 import RouteMap from './RouteMap.jsx'
+import Auth from './Auth.jsx'
+import { supabase, cloudEnabled, loadRemote, saveRemote } from './supabase.js'
 
 const STORAGE_KEY = 'dispatch-planner-v4'
 const OLD_KEYS = ['dispatch-planner-v3', 'dispatch-planner-v2', 'dispatch-planner-v1']
@@ -114,9 +116,56 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false)
   const fileRef = useRef(null)
 
+  // --- cloud account (only when Supabase is configured)
+  const [session, setSession] = useState(null)
+  const [cloudReady, setCloudReady] = useState(!cloudEnabled)
+  const [syncMsg, setSyncMsg] = useState('')
+  const skipSave = useRef(false)
+  const saveTimer = useRef(null)
+
+  useEffect(() => {
+    if (!supabase) return
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, sess) => setSession(sess))
+    return () => sub.subscription.unsubscribe()
+  }, [])
+
+  // On sign-in: take the cloud copy if there is one, otherwise push this device's data up.
+  useEffect(() => {
+    if (!supabase) return
+    if (!session) { setCloudReady(false); return }
+    let cancelled = false
+    setSyncMsg('Loading your data…')
+    loadRemote(session.user.id)
+      .then((row) => {
+        if (cancelled) return
+        if (row?.state) {
+          skipSave.current = true
+          setState({ ...freshState(), ...row.state })
+        } else {
+          return saveRemote(session.user.id, state)
+        }
+      })
+      .then(() => { if (!cancelled) { setSyncMsg(''); setCloudReady(true) } })
+      .catch((e) => { if (!cancelled) { setSyncMsg(`Could not load from the cloud: ${e.message}`); setCloudReady(true) } })
+    return () => { cancelled = true }
+  }, [session]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every change: this browser at once, the cloud a moment later.
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  }, [state])
+    if (!supabase || !session || !cloudReady) return
+    if (skipSave.current) { skipSave.current = false; return }
+    clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      saveRemote(session.user.id, state)
+        .then(() => setSyncMsg(''))
+        .catch((e) => setSyncMsg(`Not saved to the cloud: ${e.message}`))
+    }, 800)
+    return () => clearTimeout(saveTimer.current)
+  }, [state, session, cloudReady])
+
+  const signOut = async () => { await supabase.auth.signOut(); setSession(null) }
 
   const sizeById = (id) => state.materials.find((m) => m.id === id)
   const clientById = (id) => state.clients.find((c) => c.id === id)
@@ -174,6 +223,9 @@ export default function App() {
   const setDepotField = (patch) => setState((s) => ({ ...s, depot: { ...s.depot, ...patch } }))
   const locateDepot = async () => {
     if (!state.depot.address.trim()) return
+    // Pasted coordinates "12.93, 77.58" work without a lookup
+    const m = state.depot.address.match(/^\s*(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$/)
+    if (m) { setDepotField({ lat: parseFloat(m[1]), lng: parseFloat(m[2]) }); setLocating(''); return }
     setLocating('Looking up the Loading point…')
     try {
       const hit = await geocode(state.depot.address, state.city)
@@ -340,8 +392,43 @@ export default function App() {
   const unlocatedClients = state.clients.filter((c) => !hasCoords(c)).length
   const anyPinned = state.drops.some((d) => d.pin)
 
+  if (cloudEnabled && !session) return <Auth />
+  if (cloudEnabled && !cloudReady) return <div className="auth-wrap"><p className="hint">{syncMsg || 'Loading…'}</p></div>
+
+  // First run (or after sign-in with nothing saved): ask where the boys start
+  // from. It stays until changed at the top of the plan.
+  if (!hasCoords(state.depot)) {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card start-card">
+          <h1>Where do the boys start from?</h1>
+          <p className="hint" style={{ marginTop: 0 }}>The loading point: shop or godown. Every route starts and ends here. Saved permanently until you change it.</p>
+          <div className="row">
+            <input placeholder="Address (or paste coordinates like 12.93, 77.58)" value={state.depot.address} autoFocus
+              onChange={(e) => setDepotField({ address: e.target.value })}
+              onKeyDown={(e) => e.key === 'Enter' && locateDepot()} />
+            <button className="btn-accent" onClick={locateDepot} disabled={!state.depot.address.trim()}>Locate</button>
+          </div>
+          <div className="row">
+            <input placeholder="City (helps the lookup)" value={state.city}
+              onChange={(e) => setState((s) => ({ ...s, city: e.target.value }))} />
+          </div>
+          {locating && <p className="hint warn">{locating}</p>}
+          {session && <button className="btn-link" onClick={signOut}>Sign out</button>}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app">
+      {session && (
+        <div className="account-bar">
+          <span>{session.user.email}</span>
+          {syncMsg ? <span className="warn-text">{syncMsg}</span> : <span className="lp-ok">saved to the cloud</span>}
+          <button className="btn-ghost" onClick={signOut}>Sign out</button>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">DP</span>
