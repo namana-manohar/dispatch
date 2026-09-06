@@ -1,15 +1,18 @@
 # Dispatch Planner
 
-A small tool for one dispatcher running a few delivery boys and vehicles:
+For a small delivery business. You pick which clients get a delivery today; the app tells you **how many people to send and the route for each one**.
 
-- **Delivery boys** — add names, assign each to a vehicle.
-- **Materials & box sizes** — each material has a *space per box*, measured in standard boxes. A tile box twice the size of a standard box = 2; half the size = 0.5. Standard / Small / Large are pre-loaded; add Tiles, Cement, etc. with their real sizes.
-- **Fleet** — iQube, Ather and TVS pre-loaded with a capacity in standard boxes. Add an Auto when you hire one for the day or a Porter trip when you book one. Every vehicle card shows *space used / capacity* and turns red when over, telling you what to move to an auto or Porter.
-- **Drops** — a drop has a name, address, one or more material lines (e.g. 6 × Tiles + 2 × Cement), work minutes at the stop, and optional coordinates.
-- **Import list** — paste the day's list from WhatsApp, or upload Excel (.xlsx), Word (.docx), CSV or .txt. One drop per line, e.g. `Sharma Tiles, 4th Block Jayanagar, 6 boxes tiles, 2 cement`. Names, addresses, materials, box counts, minutes and coordinates are picked up automatically, shown in a preview table you can correct before adding. Spreadsheets with a header row (name / address / material / boxes / minutes / lat / lng / phone) are mapped by column.
-- **Routes** — with coordinates on every stop, stops are auto-ordered by nearest-neighbour with estimated travel time; without, you order by hand. Each stop has a Google Maps link.
+## How a day works
 
-Data is saved in the browser (localStorage). No login, no server. Whoever opens the site on their own device sees their own saved data.
+1. **Once:** import the whole client list (paste from WhatsApp, or upload Excel / Word / CSV / text). Press **Locate all** so every client is on the map. Under *Setup*, type the shop address and press Locate. All of this is remembered.
+2. **Each morning:** press **Send today** on each client getting a delivery. Give the drop its gate or department if the client has several, and the box sizes and counts. The same client can be sent to more than once (different gates).
+3. **Read the answer:** "Send 3 people on 3 routes". Each route card shows the stops in order, arrival times, boxes by size, distance, and when the person is back at the shop. Press **Map** for the route on a map, **Open in Google Maps** for turn-by-turn, **Send on WhatsApp** to hand the route to the delivery boy.
+
+Routing is automatic. Drops are grouped by direction from the shop, each route is kept under the *max stops* and *max hours* per person set at the top, and stops are ordered nearest-first. Road distances and times come from OpenStreetMap routing once a route's map has been opened; before that the estimate uses straight-line distance and the average speed. If you disagree with a grouping, use **Move…** on a stop to put it on another route or a new one.
+
+Box sizes are labels only (Small / Medium / Large by default, add your own). The app does not decide what fits on which vehicle. The owner does.
+
+Data is saved in the browser (localStorage). No login, no server. Address lookup uses OpenStreetMap's Nominatim, road routing the public OSRM server. Both are free and rate-limited, so lookups run one per second.
 
 ## Run locally
 
@@ -33,6 +36,5 @@ Later deploys are just `npx vercel --prod` again. `npm run build` must be green 
 
 ## Notes
 
-- Travel time uses straight-line distance and the average speed set at the top. It is an estimate, not road routing.
-- PDF import is not supported yet. Copy the text out of the PDF and paste it instead.
-- Old data from the first version of this app (boxes without materials) is migrated automatically as standard boxes.
+- PDF import is not supported. Copy the text out of the PDF and paste it.
+- Data from earlier versions of this app (drops loaded onto vehicles) is migrated into clients and today's drops automatically.

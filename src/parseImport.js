@@ -62,7 +62,12 @@ export function extractLines(text, materials) {
   const found = []
   let rest = text
   for (const m of materials) {
-    const name = escapeRe(m.name)
+    // "Large box" also matches plain "large" / "L"; "Medium box" matches "medium" / "M"
+    const short = m.name.replace(/\s*(boxes?|cartons?)\s*$/i, '').trim()
+    const aliases = [m.name]
+    if (short && short.toLowerCase() !== m.name.toLowerCase()) aliases.push(short)
+    if (/^(small|medium|large)$/i.test(short)) aliases.push(short[0])
+    const name = `(?:${aliases.map(escapeRe).join('|')})`
     const patterns = [
       new RegExp(`(\\d+)\\s*${UNIT}?\\s*(?:of\\s+)?${name}\\b\\s*${UNIT}?`, 'i'),
       new RegExp(`\\b${name}\\b\\s*${UNIT}?\\s*[x×:\\-–=]?\\s*(\\d+)\\s*${UNIT}?`, 'i'),

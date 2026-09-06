@@ -1,125 +1,81 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { parseText, parseFile } from './parseImport.js'
+import { geocode, sleep } from './geo.js'
+import { planRoutes, hasCoords } from './planner.js'
+import RouteMap from './RouteMap.jsx'
 
-const STORAGE_KEY = 'dispatch-planner-v2'
-const OLD_STORAGE_KEY = 'dispatch-planner-v1'
+const STORAGE_KEY = 'dispatch-planner-v4'
+const OLD_KEYS = ['dispatch-planner-v3', 'dispatch-planner-v2', 'dispatch-planner-v1']
 
-// Space is measured in "standard boxes": a material whose box is twice as big
-// as a standard box takes 2 units of space per box.
-const MATERIAL_PRESETS = [
-  { name: 'Standard box', space: 1 },
-  { name: 'Small box', space: 0.5 },
-  { name: 'Large box', space: 2 },
-]
-
-const VEHICLE_PRESETS = [
-  { type: 'TVS iQube', capacity: 15 },
-  { type: 'Ather', capacity: 15 },
-  { type: 'TVS', capacity: 15 },
-]
-
+const SIZE_PRESETS = [{ name: 'Medium box' }, { name: 'Small box' }, { name: 'Large box' }]
 const uid = () => crypto.randomUUID()
 
 function freshState() {
-  const materials = MATERIAL_PRESETS.map((m) => ({ id: uid(), ...m }))
   return {
     boys: [],
-    materials,
-    vehicles: VEHICLE_PRESETS.map((v) => ({ id: uid(), type: v.type, capacity: v.capacity, assignedBoyId: null })),
-    drops: [],
+    materials: SIZE_PRESETS.map((m) => ({ id: uid(), ...m })),
+    clients: [],   // the whole client list, kept across days
+    drops: [],     // today's deliveries, each pointing at a client
+    people: {},    // route number -> boy id
     avgSpeed: 25,
     startTime: '09:00',
+    maxStops: 8,
+    maxHours: 4,
+    depot: { address: '', lat: null, lng: null },
+    city: 'Bengaluru',
+    legCache: {},
   }
 }
 
-function migrateV1(old) {
+// Older saves: drops carried name/address themselves, and were loaded onto vehicles.
+function migrateOld(old) {
   const base = freshState()
-  const standard = base.materials[0]
+  const materials = old.materials?.length ? old.materials.map((m) => ({ id: m.id, name: m.name })) : base.materials
+  const std = materials[0]
+  const clients = (old.clients || []).map((c) => ({ ...c }))
+  const drops = (old.drops || []).map((d) => {
+    let clientId = d.clientId
+    if (!clientId) {
+      const name = d.name || ''
+      const address = d.address || ''
+      let c = clients.find((x) => x.name === name && x.address === address)
+      if (!c) {
+        c = { id: uid(), name, address, note: '', lat: d.lat ?? null, lng: d.lng ?? null, workMinutes: d.workMinutes ?? 10 }
+        clients.push(c)
+      }
+      clientId = c.id
+    }
+    return {
+      id: d.id, clientId, note: d.note || '', pin: null,
+      lines: d.lines || [{ materialId: std.id, boxes: d.boxes ?? 1 }],
+      workMinutes: d.workMinutes ?? 10,
+    }
+  })
   return {
     ...base,
     boys: old.boys || [],
-    vehicles: (old.vehicles || []).map((v) => ({ id: v.id, type: v.type, capacity: v.capacityBoxes ?? 15, assignedBoyId: v.assignedBoyId ?? null })),
-    drops: (old.drops || []).map((d) => ({
-      id: d.id, name: d.name || '', address: '', lat: d.lat ?? null, lng: d.lng ?? null,
-      workMinutes: d.workMinutes ?? 10, lines: [{ materialId: standard.id, boxes: d.boxes ?? 1 }],
-      assignedVehicleId: d.assignedVehicleId ?? null,
-    })),
+    materials, clients, drops,
     avgSpeed: old.avgSpeed ?? 25,
     startTime: old.startTime ?? '09:00',
+    depot: old.depot || base.depot,
+    city: old.city || base.city,
+    legCache: old.legCache || {},
   }
 }
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw)
-    const old = localStorage.getItem(OLD_STORAGE_KEY)
-    if (old) return migrateV1(JSON.parse(old))
+    if (raw) return { ...freshState(), ...JSON.parse(raw) }
+    for (const k of OLD_KEYS) {
+      const old = localStorage.getItem(k)
+      if (old) return migrateOld(JSON.parse(old))
+    }
   } catch (e) {
     console.error('Could not load saved data', e)
   }
   return freshState()
 }
-
-function haversineKm(a, b) {
-  const R = 6371
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180
-  const lat1 = (a.lat * Math.PI) / 180
-  const lat2 = (b.lat * Math.PI) / 180
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
-  return 2 * R * Math.asin(Math.sqrt(h))
-}
-
-const hasCoords = (d) => typeof d.lat === 'number' && typeof d.lng === 'number' && !isNaN(d.lat) && !isNaN(d.lng)
-
-function orderByNearestNeighbor(drops) {
-  if (drops.length <= 1) return drops
-  const remaining = [...drops]
-  const route = [remaining.shift()]
-  while (remaining.length) {
-    const last = route[route.length - 1]
-    let bestIdx = 0
-    let bestDist = Infinity
-    remaining.forEach((d, i) => {
-      const dist = haversineKm(last, d)
-      if (dist < bestDist) { bestDist = dist; bestIdx = i }
-    })
-    route.push(remaining.splice(bestIdx, 1)[0])
-  }
-  return route
-}
-
-function addMinutes(timeStr, minsToAdd) {
-  const [h, m] = timeStr.split(':').map(Number)
-  const total = h * 60 + m + Math.round(minsToAdd)
-  return `${String(Math.floor((total / 60) % 24)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
-}
-
-function computeRoute(vDrops, avgSpeed, startTime) {
-  const allHaveCoords = vDrops.every(hasCoords)
-  const ordered = allHaveCoords ? orderByNearestNeighbor(vDrops) : vDrops
-  let clock = startTime
-  let totalTravelKm = 0
-  let totalMinutes = 0
-  const stops = ordered.map((d, i) => {
-    let travelKm = 0
-    let travelMin = 0
-    if (i > 0 && allHaveCoords) {
-      travelKm = haversineKm(ordered[i - 1], d)
-      travelMin = (travelKm / avgSpeed) * 60
-    }
-    clock = addMinutes(clock, travelMin)
-    const arrival = clock
-    clock = addMinutes(clock, d.workMinutes || 0)
-    totalTravelKm += travelKm
-    totalMinutes += travelMin + (d.workMinutes || 0)
-    return { ...d, arrival, departure: clock, travelMin, travelKm }
-  })
-  return { stops, allHaveCoords, totalTravelKm, totalMinutes, finishTime: clock }
-}
-
-const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
 
 function Field({ label, children }) {
   return (
@@ -135,50 +91,113 @@ function mapsLink(d) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`
 }
 
+const clientLabel = (c) => c.name || c.address
+
 export default function App() {
   const [state, setState] = useState(loadState)
   const [boyName, setBoyName] = useState('')
-  const [materialForm, setMaterialForm] = useState({ name: '', space: '1' })
-  const [vehicleForm, setVehicleForm] = useState({ type: 'Auto', capacity: '40' })
-  const emptyDrop = () => ({ name: '', address: '', lat: '', lng: '', workMinutes: '10', lines: [{ materialId: state.materials[0]?.id || '', boxes: '1' }] })
-  const [dropForm, setDropForm] = useState(emptyDrop)
+  const [sizeName, setSizeName] = useState('')
+  const [clientForm, setClientForm] = useState({ name: '', address: '', note: '', workMinutes: '10' })
+  const [clientSearch, setClientSearch] = useState('')
+  const [sendForm, setSendForm] = useState(null)
   const [importOpen, setImportOpen] = useState(false)
   const [importText, setImportText] = useState('')
   const [importRows, setImportRows] = useState(null)
   const [importError, setImportError] = useState('')
+  const [mapRouteNo, setMapRouteNo] = useState(null)
+  const [locating, setLocating] = useState('')
+  const [showSetup, setShowSetup] = useState(false)
   const fileRef = useRef(null)
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
   }, [state])
 
-  const materialById = (id) => state.materials.find((m) => m.id === id)
-  const spaceOfLines = (lines) => lines.reduce((sum, l) => sum + (l.boxes || 0) * (materialById(l.materialId)?.space ?? 1), 0)
+  const sizeById = (id) => state.materials.find((m) => m.id === id)
+  const clientById = (id) => state.clients.find((c) => c.id === id)
   const boxesOfLines = (lines) => lines.reduce((sum, l) => sum + (l.boxes || 0), 0)
-  const describeLines = (lines) => lines.map((l) => `${l.boxes} × ${materialById(l.materialId)?.name || 'box'}`).join(', ')
+  const describeLines = (lines) => lines.map((l) => `${l.boxes} × ${sizeById(l.materialId)?.name || 'box'}`).join(', ')
+  const normalizeLines = (lines) => lines
+    .map((l) => ({ materialId: l.materialId || state.materials[0]?.id, boxes: parseInt(l.boxes, 10) || 0 }))
+    .filter((l) => l.boxes > 0)
+  const sizeBreakdown = (drops) => {
+    const counts = {}
+    drops.forEach((d) => d.lines.forEach((l) => { const n = sizeById(l.materialId)?.name || 'box'; counts[n] = (counts[n] || 0) + (l.boxes || 0) }))
+    return Object.entries(counts).map(([n, c]) => `${c} ${n.replace(/\s*boxe?s?$/i, '')}`).join(', ')
+  }
 
-  // --- boys
+  // Today's drops with each client's name/address/pin folded in
+  const resolvedDrops = useMemo(() => state.drops.map((d) => {
+    const c = clientById(d.clientId) || {}
+    return { ...d, name: c.name || '', address: c.address || '', lat: c.lat ?? null, lng: c.lng ?? null }
+  }), [state.drops, state.clients]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The plan: how many routes, who goes where, in what order
+  const plan = useMemo(() => planRoutes(resolvedDrops, {
+    depot: state.depot, avgSpeed: state.avgSpeed, startTime: state.startTime,
+    legCache: state.legCache, maxStops: state.maxStops, maxHours: state.maxHours,
+  }), [resolvedDrops, state.depot, state.avgSpeed, state.startTime, state.legCache, state.maxStops, state.maxHours])
+
+  // --- start point & address lookup (Nominatim, one request at a time)
+  const setDepotField = (patch) => setState((s) => ({ ...s, depot: { ...s.depot, ...patch } }))
+  const locateDepot = async () => {
+    if (!state.depot.address.trim()) return
+    setLocating('Looking up the shop…')
+    try {
+      const hit = await geocode(state.depot.address, state.city)
+      if (hit) setDepotField({ lat: hit.lat, lng: hit.lng })
+      setLocating(hit ? '' : 'Shop address not found. Try a fuller address.')
+    } catch (e) { setLocating(e.message) }
+  }
+  const pinClient = (id, hit) => setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === id ? { ...c, lat: hit.lat, lng: hit.lng } : c)) }))
+  const locateClient = async (id) => {
+    const c = clientById(id)
+    if (!c) return
+    setLocating(`Looking up ${clientLabel(c)}…`)
+    try {
+      const hit = await geocode(c.address || c.name, state.city)
+      if (hit) pinClient(id, hit)
+      setLocating(hit ? '' : `Could not find "${c.address || c.name}". Edit the address and try again.`)
+    } catch (e) { setLocating(e.message) }
+  }
+  const locateAll = async () => {
+    const todo = state.clients.filter((c) => !hasCoords(c) && (c.address || c.name))
+    const missed = []
+    for (let i = 0; i < todo.length; i++) {
+      const c = todo[i]
+      setLocating(`Looking up ${i + 1} of ${todo.length}: ${clientLabel(c)}…`)
+      try {
+        const hit = await geocode(c.address || c.name, state.city)
+        if (hit) pinClient(c.id, hit)
+        else missed.push(clientLabel(c))
+      } catch (e) { missed.push(clientLabel(c)) }
+      if (i < todo.length - 1) await sleep(1100)
+    }
+    setLocating(missed.length ? `Not found: ${missed.join(', ')}. Edit those addresses and try again.` : '')
+  }
+  const applyLegs = (legs) => setState((s) => {
+    const next = { ...s.legCache }
+    legs.forEach((l) => { next[l.key] = { km: l.km, min: l.min } })
+    return { ...s, legCache: next }
+  })
+
+  // --- boys & sizes
   const addBoy = () => {
     if (!boyName.trim()) return
     setState((s) => ({ ...s, boys: [...s.boys, { id: uid(), name: boyName.trim() }] }))
     setBoyName('')
   }
-  const removeBoy = (id) => setState((s) => ({
-    ...s,
-    boys: s.boys.filter((b) => b.id !== id),
-    vehicles: s.vehicles.map((v) => (v.assignedBoyId === id ? { ...v, assignedBoyId: null } : v)),
-  }))
-
-  // --- materials
-  const addMaterial = () => {
-    if (!materialForm.name.trim()) return
-    setState((s) => ({ ...s, materials: [...s.materials, { id: uid(), name: materialForm.name.trim(), space: parseFloat(materialForm.space) || 1 }] }))
-    setMaterialForm({ name: '', space: '1' })
+  const removeBoy = (id) => setState((s) => {
+    const people = {}
+    Object.entries(s.people).forEach(([k, v]) => { if (v !== id) people[k] = v })
+    return { ...s, boys: s.boys.filter((b) => b.id !== id), people }
+  })
+  const addSize = () => {
+    if (!sizeName.trim()) return
+    setState((s) => ({ ...s, materials: [...s.materials, { id: uid(), name: sizeName.trim() }] }))
+    setSizeName('')
   }
-  const setMaterialSpace = (id, space) => setState((s) => ({
-    ...s, materials: s.materials.map((m) => (m.id === id ? { ...m, space: parseFloat(space) || 0 } : m)),
-  }))
-  const removeMaterial = (id) => setState((s) => {
+  const removeSize = (id) => setState((s) => {
     if (s.materials.length <= 1) return s
     const fallback = s.materials.find((m) => m.id !== id).id
     return {
@@ -188,77 +207,63 @@ export default function App() {
     }
   })
 
-  // --- vehicles
-  const addVehicle = () => {
-    if (!vehicleForm.type.trim()) return
-    setState((s) => ({ ...s, vehicles: [...s.vehicles, { id: uid(), type: vehicleForm.type.trim(), capacity: parseFloat(vehicleForm.capacity) || 1, assignedBoyId: null }] }))
-    setVehicleForm({ type: 'Porter (booked)', capacity: '100' })
+  // --- clients (the master list)
+  const addClient = () => {
+    if (!clientForm.name.trim() && !clientForm.address.trim()) return
+    setState((s) => ({
+      ...s,
+      clients: [...s.clients, {
+        id: uid(), name: clientForm.name.trim(), address: clientForm.address.trim(), note: clientForm.note.trim(),
+        lat: null, lng: null, workMinutes: parseInt(clientForm.workMinutes, 10) || 10,
+      }],
+    }))
+    setClientForm({ name: '', address: '', note: '', workMinutes: '10' })
   }
-  const removeVehicle = (id) => setState((s) => ({
-    ...s,
-    vehicles: s.vehicles.filter((v) => v.id !== id),
-    drops: s.drops.map((d) => (d.assignedVehicleId === id ? { ...d, assignedVehicleId: null } : d)),
-  }))
-  const setVehicleBoy = (vehicleId, boyId) => setState((s) => ({
-    ...s, vehicles: s.vehicles.map((v) => (v.id === vehicleId ? { ...v, assignedBoyId: boyId || null } : v)),
-  }))
-  const setVehicleCapacity = (vehicleId, capacity) => setState((s) => ({
-    ...s, vehicles: s.vehicles.map((v) => (v.id === vehicleId ? { ...v, capacity: parseFloat(capacity) || 0 } : v)),
-  }))
+  const removeClient = (id) => {
+    const inUse = state.drops.some((d) => d.clientId === id)
+    if (inUse && !window.confirm('This client has a drop today. Remove the client and the drop?')) return
+    setState((s) => ({ ...s, clients: s.clients.filter((c) => c.id !== id), drops: s.drops.filter((d) => d.clientId !== id) }))
+  }
 
-  // --- drops
-  const normalizeLines = (lines) => lines
-    .map((l) => ({ materialId: l.materialId || state.materials[0]?.id, boxes: parseInt(l.boxes, 10) || 0 }))
-    .filter((l) => l.boxes > 0)
-
-  const addDrop = () => {
-    if (!dropForm.name.trim() && !dropForm.address.trim()) return
-    const lat = parseFloat(dropForm.lat)
-    const lng = parseFloat(dropForm.lng)
-    const lines = normalizeLines(dropForm.lines)
+  // --- today's drops
+  const openSend = (c) => setSendForm({
+    clientId: c.id, note: c.note || '', workMinutes: String(c.workMinutes ?? 10),
+    lines: [{ materialId: state.materials[0]?.id, boxes: '1' }],
+  })
+  const confirmSend = () => {
+    if (!sendForm) return
+    const lines = normalizeLines(sendForm.lines)
     setState((s) => ({
       ...s,
       drops: [...s.drops, {
-        id: uid(), name: dropForm.name.trim(), address: dropForm.address.trim(),
-        lat: isNaN(lat) ? null : lat, lng: isNaN(lng) ? null : lng,
-        workMinutes: parseInt(dropForm.workMinutes, 10) || 0,
+        id: uid(), clientId: sendForm.clientId, note: sendForm.note.trim(), pin: null,
         lines: lines.length ? lines : [{ materialId: s.materials[0].id, boxes: 1 }],
-        assignedVehicleId: null,
+        workMinutes: parseInt(sendForm.workMinutes, 10) || 0,
       }],
     }))
-    setDropForm(emptyDrop())
+    setSendForm(null)
   }
   const removeDrop = (id) => setState((s) => ({ ...s, drops: s.drops.filter((d) => d.id !== id) }))
-  const assignDrop = (dropId, vehicleId) => setState((s) => ({
-    ...s, drops: s.drops.map((d) => (d.id === dropId ? { ...d, assignedVehicleId: vehicleId || null } : d)),
+  const pinDrop = (id, routeNo) => setState((s) => ({
+    ...s, drops: s.drops.map((d) => (d.id === id ? { ...d, pin: routeNo ? parseInt(routeNo, 10) : null } : d)),
   }))
-  const moveDrop = (vehicleId, index, dir) => setState((s) => {
-    const vDrops = s.drops.filter((d) => d.assignedVehicleId === vehicleId)
-    const otherDrops = s.drops.filter((d) => d.assignedVehicleId !== vehicleId)
-    const newIndex = index + dir
-    if (newIndex < 0 || newIndex >= vDrops.length) return s
-    const reordered = [...vDrops]
-    ;[reordered[index], reordered[newIndex]] = [reordered[newIndex], reordered[index]]
-    return { ...s, drops: [...otherDrops, ...reordered] }
-  })
+  const resetPins = () => setState((s) => ({ ...s, drops: s.drops.map((d) => ({ ...d, pin: null })) }))
   const clearDrops = () => {
-    if (state.drops.length && window.confirm("Remove all of today's drops? Boys, fleet and materials stay.")) {
-      setState((s) => ({ ...s, drops: [] }))
+    if (state.drops.length && window.confirm("Clear today's drops? The client list, boys and box sizes stay.")) {
+      setState((s) => ({ ...s, drops: [], people: {} }))
     }
   }
+  const setRoutePerson = (routeNo, boyId) => setState((s) => ({ ...s, people: { ...s.people, [routeNo]: boyId || null } }))
 
-  // --- import
+  // --- import (into the client list)
   const runImport = async (file) => {
     setImportError('')
     try {
       const rows = file ? await parseFile(file, state.materials) : parseText(importText, state.materials)
-      if (!rows.length) { setImportError('No addresses found. Put one drop per line, e.g. "MG Road shop, 5 boxes tiles".'); return }
+      if (!rows.length) { setImportError('No addresses found. Put one client per line, e.g. "Sharma Tiles, 4th Block Jayanagar".'); return }
       setImportRows(rows.map((r) => ({
-        key: uid(), include: true, name: r.name || '', address: r.address || '',
+        key: uid(), include: true, name: r.name || '', address: r.address || '', note: '',
         workMinutes: r.workMinutes ?? 10, lat: r.lat, lng: r.lng,
-        lines: r.lines.length
-          ? r.lines.map((l) => ({ materialId: l.materialId || state.materials[0].id, boxes: l.boxes }))
-          : [{ materialId: state.materials[0].id, boxes: 1 }],
       })))
     } catch (e) {
       setImportError(e.message || String(e))
@@ -269,37 +274,28 @@ export default function App() {
     const chosen = importRows.filter((r) => r.include && (r.address || r.name))
     setState((s) => ({
       ...s,
-      drops: [...s.drops, ...chosen.map((r) => {
-        const lines = normalizeLines(r.lines)
-        return {
-          id: uid(), name: r.name.trim(), address: r.address.trim(), lat: r.lat, lng: r.lng,
-          workMinutes: parseInt(r.workMinutes, 10) || 0,
-          lines: lines.length ? lines : [{ materialId: s.materials[0].id, boxes: 1 }],
-          assignedVehicleId: null,
-        }
-      })],
+      clients: [...s.clients, ...chosen.map((r) => ({
+        id: uid(), name: r.name.trim(), address: r.address.trim(), note: r.note.trim(),
+        lat: r.lat, lng: r.lng, workMinutes: parseInt(r.workMinutes, 10) || 10,
+      }))],
     }))
     setImportRows(null)
     setImportText('')
     setImportOpen(false)
   }
 
-  const routesByVehicle = useMemo(() => {
-    const map = {}
-    state.vehicles.forEach((v) => {
-      map[v.id] = computeRoute(state.drops.filter((d) => d.assignedVehicleId === v.id), state.avgSpeed, state.startTime)
-    })
-    return map
-  }, [state.vehicles, state.drops, state.avgSpeed, state.startTime])
-
-  const unassigned = state.drops.filter((d) => !d.assignedVehicleId)
+  const dropsTodayFor = (clientId) => state.drops.filter((d) => d.clientId === clientId).length
+  const q = clientSearch.trim().toLowerCase()
+  const visibleClients = q
+    ? state.clients.filter((c) => `${c.name} ${c.address} ${c.note}`.toLowerCase().includes(q))
+    : state.clients
+  const stopTitle = (s) => `${s.name || s.address}${s.note ? ` · ${s.note}` : ''}`
+  const stopSub = (s) => (s.name && s.address ? s.address : null)
+  const sendClient = sendForm ? clientById(sendForm.clientId) : null
+  const mapRoute = plan.routes.find((r) => r.number === mapRouteNo)
   const totalBoxes = state.drops.reduce((sum, d) => sum + boxesOfLines(d.lines), 0)
-  const totalSpace = state.drops.reduce((sum, d) => sum + spaceOfLines(d.lines), 0)
-  const totalCapacity = state.vehicles.reduce((sum, v) => sum + (v.capacity || 0), 0)
-  const unassignedSpace = unassigned.reduce((sum, d) => sum + spaceOfLines(d.lines), 0)
-
-  const dropTitle = (d) => d.name || d.address
-  const dropSub = (d) => (d.name && d.address ? d.address : null)
+  const unlocatedClients = state.clients.filter((c) => !hasCoords(c)).length
+  const anyPinned = state.drops.some((d) => d.pin)
 
   return (
     <div className="app">
@@ -308,232 +304,230 @@ export default function App() {
           <span className="brand-mark">DP</span>
           <div>
             <h1>Dispatch Planner</h1>
-            <p>Load vehicles by space, order the route, know when the day ends.</p>
+            <p>Pick today's clients. It tells you how many people to send and the route for each.</p>
           </div>
         </div>
         <div className="global-settings">
-          <Field label="Avg speed (km/h)">
-            <input type="number" min="1" value={state.avgSpeed}
-              onChange={(e) => setState((s) => ({ ...s, avgSpeed: parseFloat(e.target.value) || 1 }))} />
-          </Field>
           <Field label="Day start">
             <input type="time" value={state.startTime}
               onChange={(e) => setState((s) => ({ ...s, startTime: e.target.value }))} />
           </Field>
+          <Field label="Max stops / person">
+            <input type="number" min="1" value={state.maxStops}
+              onChange={(e) => setState((s) => ({ ...s, maxStops: parseInt(e.target.value, 10) || 1 }))} />
+          </Field>
+          <Field label="Max hours / person">
+            <input type="number" min="0.5" step="0.5" value={state.maxHours}
+              onChange={(e) => setState((s) => ({ ...s, maxHours: parseFloat(e.target.value) || 0.5 }))} />
+          </Field>
+          <Field label="Avg speed (km/h)">
+            <input type="number" min="1" value={state.avgSpeed}
+              onChange={(e) => setState((s) => ({ ...s, avgSpeed: parseFloat(e.target.value) || 1 }))} />
+          </Field>
         </div>
       </header>
-
-      <div className="summary-bar">
-        <div><strong>{state.drops.length}</strong><span>drops today</span></div>
-        <div><strong>{totalBoxes}</strong><span>boxes</span></div>
-        <div><strong>{fmt(totalSpace)}</strong><span>space needed</span></div>
-        <div><strong>{fmt(totalCapacity)}</strong><span>fleet space</span></div>
-        <div className={unassignedSpace > 0 ? 'warn-stat' : ''}>
-          <strong>{fmt(unassignedSpace)}</strong><span>space unassigned</span>
-        </div>
-        {totalSpace > totalCapacity && (
-          <div className="warn-stat"><strong>+{fmt(totalSpace - totalCapacity)}</strong><span>short — add auto / Porter</span></div>
-        )}
-      </div>
 
       <div className="layout">
         <aside className="panel">
           <section className="block">
-            <h2>Delivery boys</h2>
-            <div className="row">
-              <input placeholder="Name" value={boyName} onChange={(e) => setBoyName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addBoy()} />
-              <button className="btn-accent" onClick={addBoy}>Add</button>
+            <div className="block-head">
+              <h2>Clients</h2>
+              <div className="row" style={{ marginTop: 0 }}>
+                <button className="btn-outline" onClick={() => { setImportOpen(true); setImportRows(null); setImportError('') }}>Import list</button>
+                {unlocatedClients > 0 && <button className="btn-outline" onClick={locateAll}>Locate all</button>}
+              </div>
             </div>
+            {locating && <p className="hint warn" style={{ marginBottom: 8 }}>{locating}</p>}
+            {state.clients.length > 5 && (
+              <input placeholder="Search clients…" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} style={{ width: '100%' }} />
+            )}
             <ul className="list">
-              {state.boys.map((b) => (
-                <li key={b.id}>
-                  <span>{b.name}</span>
-                  <button className="btn-ghost" onClick={() => removeBoy(b.id)}>Remove</button>
-                </li>
-              ))}
-              {state.boys.length === 0 && <li className="empty">No one added yet.</li>}
+              {visibleClients.map((c) => {
+                const n = dropsTodayFor(c.id)
+                return (
+                  <li key={c.id} className={n ? 'client-today' : ''}>
+                    <div className="drop-info">
+                      <span>{clientLabel(c)}{c.note ? ` · ${c.note}` : ''}</span>
+                      {c.name && c.address && <small>{c.address}</small>}
+                      <small>{hasCoords(c) ? 'on map' : 'not on map yet'}{n ? ` · ${n} drop${n > 1 ? 's' : ''} today` : ''}</small>
+                    </div>
+                    <div className="row">
+                      {!hasCoords(c) && <button className="btn-ghost" onClick={() => locateClient(c.id)} title="Find this address on the map">Locate</button>}
+                      <button className="btn-accent btn-small" onClick={() => openSend(c)}>Send today</button>
+                      <button className="btn-ghost" onClick={() => removeClient(c.id)}>×</button>
+                    </div>
+                  </li>
+                )
+              })}
+              {state.clients.length === 0 && <li className="empty">No clients yet. Import your list, or add one below.</li>}
+              {state.clients.length > 0 && visibleClients.length === 0 && <li className="empty">No client matches "{clientSearch}".</li>}
             </ul>
-          </section>
-
-          <section className="block">
-            <h2>Materials &amp; box sizes</h2>
-            <div className="row">
-              <input placeholder="Material (e.g. Tiles, Cement)" value={materialForm.name}
-                onChange={(e) => setMaterialForm((f) => ({ ...f, name: e.target.value }))}
-                onKeyDown={(e) => e.key === 'Enter' && addMaterial()} />
-              <input type="number" min="0.1" step="0.1" placeholder="Space" className="capacity-input" value={materialForm.space}
-                onChange={(e) => setMaterialForm((f) => ({ ...f, space: e.target.value }))} />
-              <button className="btn-accent" onClick={addMaterial}>Add</button>
-            </div>
-            <p className="hint">Space is how much room one box of that material takes, measured in standard boxes. A tile box twice the size of a standard box = 2. Half the size = 0.5.</p>
-            <ul className="list">
-              {state.materials.map((m) => (
-                <li key={m.id} className="vehicle-row">
-                  <div className="drop-info">
-                    <span>{m.name}</span>
-                    <small>space per box</small>
-                  </div>
-                  <input type="number" min="0" step="0.1" className="capacity-input" value={m.space}
-                    onChange={(e) => setMaterialSpace(m.id, e.target.value)} />
-                  <button className="btn-ghost" onClick={() => removeMaterial(m.id)} disabled={state.materials.length <= 1}>×</button>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section className="block">
-            <h2>Fleet</h2>
-            <div className="row">
-              <input placeholder="Vehicle (e.g. Auto, Porter)" value={vehicleForm.type}
-                onChange={(e) => setVehicleForm((f) => ({ ...f, type: e.target.value }))} />
-              <input type="number" min="1" placeholder="Space" className="capacity-input" value={vehicleForm.capacity}
-                onChange={(e) => setVehicleForm((f) => ({ ...f, capacity: e.target.value }))} />
-              <button className="btn-accent" onClick={addVehicle}>Add</button>
-            </div>
-            <p className="hint">Capacity is in standard boxes. iQube, Ather and TVS are pre-loaded. Add an Auto when you hire one, or a Porter trip when you book one.</p>
-            <ul className="list">
-              {state.vehicles.map((v) => (
-                <li key={v.id} className="vehicle-row">
-                  <div className="drop-info">
-                    <span>{v.type}</span>
-                    <small>fits (std boxes)</small>
-                  </div>
-                  <input type="number" min="0" className="capacity-input" value={v.capacity}
-                    onChange={(e) => setVehicleCapacity(v.id, e.target.value)} />
-                  <select value={v.assignedBoyId || ''} onChange={(e) => setVehicleBoy(v.id, e.target.value)}>
-                    <option value="">No boy assigned</option>
-                    {state.boys.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                  </select>
-                  <button className="btn-ghost" onClick={() => removeVehicle(v.id)}>×</button>
-                </li>
-              ))}
-            </ul>
+            <details className="details">
+              <summary>Add a client by hand</summary>
+              <div className="drop-form">
+                <input placeholder="Client / shop name" value={clientForm.name}
+                  onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))} />
+                <input placeholder="Address" value={clientForm.address} style={{ marginTop: 8 }}
+                  onChange={(e) => setClientForm((f) => ({ ...f, address: e.target.value }))} />
+                <div className="row">
+                  <input placeholder="Gate / department (optional)" value={clientForm.note}
+                    onChange={(e) => setClientForm((f) => ({ ...f, note: e.target.value }))} />
+                  <input type="number" min="0" placeholder="Min" title="Usual minutes of work at this client" className="capacity-input" value={clientForm.workMinutes}
+                    onChange={(e) => setClientForm((f) => ({ ...f, workMinutes: e.target.value }))} />
+                </div>
+                <button className="btn-accent" onClick={addClient}>Add client</button>
+              </div>
+            </details>
           </section>
 
           <section className="block">
             <div className="block-head">
-              <h2>Drop locations</h2>
-              <div className="row" style={{ marginTop: 0 }}>
-                <button className="btn-outline" onClick={() => { setImportOpen(true); setImportRows(null); setImportError('') }}>Import list</button>
-                {state.drops.length > 0 && <button className="btn-ghost" onClick={clearDrops}>Clear day</button>}
-              </div>
+              <h2>Today's drops</h2>
+              {state.drops.length > 0 && <button className="btn-ghost" onClick={clearDrops}>Clear day</button>}
             </div>
-            <div className="drop-form">
-              <input placeholder="Customer / shop name (optional)" value={dropForm.name}
-                onChange={(e) => setDropForm((f) => ({ ...f, name: e.target.value }))} />
-              <input placeholder="Address" value={dropForm.address} style={{ marginTop: 8 }}
-                onChange={(e) => setDropForm((f) => ({ ...f, address: e.target.value }))} />
-              {dropForm.lines.map((l, i) => (
-                <div className="row" key={i}>
-                  <select value={l.materialId} onChange={(e) => setDropForm((f) => ({ ...f, lines: f.lines.map((x, j) => (j === i ? { ...x, materialId: e.target.value } : x)) }))}>
-                    {state.materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                  <input type="number" min="1" placeholder="Boxes" className="capacity-input" value={l.boxes}
-                    onChange={(e) => setDropForm((f) => ({ ...f, lines: f.lines.map((x, j) => (j === i ? { ...x, boxes: e.target.value } : x)) }))} />
-                  {dropForm.lines.length > 1 && (
-                    <button className="btn-ghost" onClick={() => setDropForm((f) => ({ ...f, lines: f.lines.filter((_, j) => j !== i) }))}>×</button>
-                  )}
-                </div>
-              ))}
-              <button className="btn-link" onClick={() => setDropForm((f) => ({ ...f, lines: [...f.lines, { materialId: state.materials[0]?.id, boxes: '1' }] }))}>+ another material</button>
-              <div className="row">
-                <input placeholder="Latitude (optional)" value={dropForm.lat}
-                  onChange={(e) => setDropForm((f) => ({ ...f, lat: e.target.value }))} />
-                <input placeholder="Longitude (optional)" value={dropForm.lng}
-                  onChange={(e) => setDropForm((f) => ({ ...f, lng: e.target.value }))} />
-                <input type="number" min="0" placeholder="Min" title="Minutes of work at this stop" className="capacity-input" value={dropForm.workMinutes}
-                  onChange={(e) => setDropForm((f) => ({ ...f, workMinutes: e.target.value }))} />
-              </div>
-              <button className="btn-accent" onClick={addDrop}>Add drop</button>
-              <p className="hint">Have the day's list in WhatsApp, Excel or Word? Use <b>Import list</b>. One drop per line, like "Sharma tiles, 4th block Jayanagar, 6 boxes tiles, 2 cement".</p>
-            </div>
-
-            <ul className="list">
-              {unassigned.map((d) => (
+            <ul className="list" style={{ marginTop: 0 }}>
+              {resolvedDrops.map((d) => (
                 <li key={d.id}>
                   <div className="drop-info">
-                    <span>{dropTitle(d)}</span>
-                    {dropSub(d) && <small>{dropSub(d)}</small>}
-                    <small>{describeLines(d.lines)} · {fmt(spaceOfLines(d.lines))} space · {d.workMinutes}m</small>
+                    <span>{stopTitle(d)}</span>
+                    <small>{describeLines(d.lines)} · {d.workMinutes}m{hasCoords(d) ? '' : ' · not on map yet'}</small>
                   </div>
                   <div className="row">
-                    <select onChange={(e) => assignDrop(d.id, e.target.value)} value="">
-                      <option value="" disabled>Load onto…</option>
-                      {state.vehicles.map((v) => {
-                        const used = spaceOfLines(routesByVehicle[v.id].stops.flatMap((s) => s.lines))
-                        return <option key={v.id} value={v.id}>{v.type} ({fmt(v.capacity - used)} free)</option>
-                      })}
-                    </select>
+                    {!hasCoords(d) && <button className="btn-ghost" onClick={() => locateClient(d.clientId)}>Locate</button>}
                     <button className="btn-ghost" onClick={() => removeDrop(d.id)}>×</button>
                   </div>
                 </li>
               ))}
-              {unassigned.length === 0 && state.drops.length > 0 && <li className="empty">All drops loaded.</li>}
-              {state.drops.length === 0 && <li className="empty">No drops added yet.</li>}
+              {state.drops.length === 0 && <li className="empty">Nothing yet. Press "Send today" on a client.</li>}
             </ul>
+          </section>
+
+          <section className="block">
+            <button className="btn-link" onClick={() => setShowSetup((v) => !v)}>{showSetup ? '▾ Hide setup' : '▸ Setup: shop address, delivery boys, box sizes'}</button>
+            {showSetup && (
+              <>
+                <h2 style={{ marginTop: 12 }}>Shop (start point)</h2>
+                <div className="row" style={{ marginTop: 0 }}>
+                  <input placeholder="Shop address" value={state.depot.address}
+                    onChange={(e) => setDepotField({ address: e.target.value })}
+                    onKeyDown={(e) => e.key === 'Enter' && locateDepot()} />
+                  <button className="btn-outline" onClick={locateDepot} disabled={!state.depot.address.trim()}>Locate</button>
+                </div>
+                <div className="row">
+                  <input placeholder="City (helps address lookup)" value={state.city}
+                    onChange={(e) => setState((s) => ({ ...s, city: e.target.value }))} />
+                </div>
+                <p className="hint">
+                  {hasCoords(state.depot)
+                    ? `Shop pinned at ${state.depot.lat.toFixed(4)}, ${state.depot.lng.toFixed(4)}. Every route starts and ends here.`
+                    : 'Type the shop address and press Locate. Routes start and end here.'}
+                </p>
+
+                <h2 style={{ marginTop: 20 }}>Delivery boys</h2>
+                <div className="row" style={{ marginTop: 0 }}>
+                  <input placeholder="Name" value={boyName} onChange={(e) => setBoyName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addBoy()} />
+                  <button className="btn-accent" onClick={addBoy}>Add</button>
+                </div>
+                <ul className="list">
+                  {state.boys.map((b) => (
+                    <li key={b.id}>
+                      <span>{b.name}</span>
+                      <button className="btn-ghost" onClick={() => removeBoy(b.id)}>Remove</button>
+                    </li>
+                  ))}
+                  {state.boys.length === 0 && <li className="empty">Optional. Names let you put a person on each route.</li>}
+                </ul>
+
+                <h2 style={{ marginTop: 20 }}>Box sizes</h2>
+                <div className="row" style={{ marginTop: 0 }}>
+                  <input placeholder="Size name (e.g. Tile box)" value={sizeName}
+                    onChange={(e) => setSizeName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addSize()} />
+                  <button className="btn-accent" onClick={addSize}>Add</button>
+                </div>
+                <ul className="list">
+                  {state.materials.map((m) => (
+                    <li key={m.id}>
+                      <span>{m.name}</span>
+                      <button className="btn-ghost" onClick={() => removeSize(m.id)} disabled={state.materials.length <= 1}>×</button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </section>
         </aside>
 
         <main className="board">
-          {state.vehicles.length === 0 && <div className="placeholder">Add a vehicle on the left to start loading drops.</div>}
-          {state.vehicles.map((v) => {
-            const route = routesByVehicle[v.id]
-            const boy = state.boys.find((b) => b.id === v.assignedBoyId)
-            const loadedSpace = route.stops.reduce((sum, s) => sum + spaceOfLines(s.lines), 0)
-            const loadedBoxes = route.stops.reduce((sum, s) => sum + boxesOfLines(s.lines), 0)
-            const overCapacity = loadedSpace > v.capacity
+          <div className="answer">
+            {state.drops.length === 0 ? (
+              <>
+                <h2>No drops yet today</h2>
+                <p>Press <b>Send today</b> on each client getting a delivery. The plan appears here.</p>
+              </>
+            ) : plan.routes.length === 0 ? (
+              <>
+                <h2>{state.drops.length} drop{state.drops.length > 1 ? 's' : ''} waiting for locations</h2>
+                <p>Press <b>Locate all</b> under Clients (once per client, it is remembered) and the routes will be drawn up.</p>
+              </>
+            ) : (
+              <>
+                <h2>Send {plan.routes.length} {plan.routes.length === 1 ? 'person' : 'people'} on {plan.routes.length} route{plan.routes.length > 1 ? 's' : ''}</h2>
+                <p>
+                  {state.drops.length} drops · {totalBoxes} boxes ({sizeBreakdown(state.drops)}) · at most {state.maxStops} stops and {state.maxHours}h per person
+                  {!hasCoords(state.depot) && ' · shop address not set, so routes start at the first stop'}
+                </p>
+                {plan.unlocated.length > 0 && (
+                  <p className="warn-text">{plan.unlocated.length} drop{plan.unlocated.length > 1 ? 's' : ''} not on the map yet, not in any route: {plan.unlocated.map(stopTitle).join(', ')}. Press Locate on them.</p>
+                )}
+                {anyPinned && <button className="btn-link" onClick={resetPins}>Undo my manual moves, plan again</button>}
+              </>
+            )}
+          </div>
+
+          {plan.routes.map((r) => {
+            const person = state.boys.find((b) => b.id === state.people[r.number])
+            const boxes = r.stops.reduce((sum, s) => sum + boxesOfLines(s.lines), 0)
             return (
-              <section className={`route-card${overCapacity ? ' over-capacity' : ''}`} key={v.id}>
-                <div className="route-head">
+              <section className="route-card" key={r.number}>
+                <div className="route-head route-head-clickable" onClick={() => setMapRouteNo(r.number)} title="Show this route on the map">
                   <div>
-                    <h3>{v.type}</h3>
-                    <p className="boy-tag">{boy ? boy.name : 'No delivery boy assigned'}</p>
+                    <h3>Route {r.number}</h3>
+                    <select className="person-select" value={state.people[r.number] || ''} onClick={(e) => e.stopPropagation()} onChange={(e) => setRoutePerson(r.number, e.target.value)}>
+                      <option value="">Who takes this?</option>
+                      {state.boys.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
                   </div>
+                  <button className="btn-outline" onClick={(e) => { e.stopPropagation(); setMapRouteNo(r.number) }}>Map</button>
                   <div className="route-stats">
-                    <div className={overCapacity ? 'stat-warn' : ''}>
-                      <strong>{fmt(loadedSpace)}/{fmt(v.capacity)}</strong><span>space</span>
-                    </div>
-                    <div><strong>{loadedBoxes}</strong><span>boxes</span></div>
-                    <div><strong>{route.stops.length}</strong><span>stops</span></div>
-                    <div><strong>{route.totalTravelKm.toFixed(1)}</strong><span>km</span></div>
-                    <div><strong>{Math.round(route.totalMinutes)}</strong><span>min</span></div>
-                    <div><strong>{route.finishTime}</strong><span>finish</span></div>
+                    <div><strong>{r.stops.length}</strong><span>stops</span></div>
+                    <div><strong>{boxes}</strong><span>boxes</span></div>
+                    <div><strong className="stat-text">{sizeBreakdown(r.stops)}</strong><span>by size</span></div>
+                    <div><strong>{r.totalKm.toFixed(1)}</strong><span>km</span></div>
+                    <div><strong>{Math.round(r.totalMin)}</strong><span>min</span></div>
+                    <div><strong>{r.hasStart ? r.backTime : r.finishTime}</strong><span>{r.hasStart ? 'back at shop' : 'last stop done'}</span></div>
                   </div>
                 </div>
-                {overCapacity && (
-                  <p className="hint warn">Over by {fmt(loadedSpace - v.capacity)} standard boxes of space. Move a drop to another vehicle, an auto, or book a Porter trip.</p>
-                )}
-                {!route.allHaveCoords && route.stops.length > 0 && (
-                  <p className="hint">No coordinates on some stops, so this is your manual order and travel time is not counted. Use the arrows to reorder.</p>
-                )}
                 <ol className="stops">
-                  {route.stops.map((s, i) => (
+                  {r.stops.map((s, i) => (
                     <li key={s.id}>
                       <div className="stop-time">
                         <strong>{s.arrival}</strong>
                         <small>→ {s.departure}</small>
                       </div>
                       <div className="stop-info">
-                        <span>{dropTitle(s)}</span>
-                        {dropSub(s) && <small>{dropSub(s)}</small>}
-                        <small>
-                          {describeLines(s.lines)} · {fmt(spaceOfLines(s.lines))} space ·{' '}
-                          {s.travelMin > 0 && `${s.travelKm.toFixed(1)}km · `}
-                          {s.workMinutes}m work
-                        </small>
+                        <span>{i + 1}. {stopTitle(s)}</span>
+                        {stopSub(s) && <small>{stopSub(s)}</small>}
+                        <small>{describeLines(s.lines)} · {s.travelMin > 0 && `${s.travelKm.toFixed(1)}km · `}{s.workMinutes}m work</small>
                       </div>
                       <a className="btn-ghost" href={mapsLink(s)} target="_blank" rel="noreferrer" title="Open in Google Maps">Map</a>
-                      {!route.allHaveCoords && (
-                        <div className="reorder">
-                          <button onClick={() => moveDrop(v.id, i, -1)} disabled={i === 0}>↑</button>
-                          <button onClick={() => moveDrop(v.id, i, 1)} disabled={i === route.stops.length - 1}>↓</button>
-                        </div>
-                      )}
-                      <button className="btn-ghost" onClick={() => assignDrop(s.id, '')}>Unload</button>
+                      <select className="move-select" value={s.pin || ''} onChange={(e) => pinDrop(s.id, e.target.value)} title="Move this stop to another route">
+                        <option value="">{s.pin ? 'Auto' : 'Move…'}</option>
+                        {plan.routes.map((o) => <option key={o.number} value={o.number}>Route {o.number}</option>)}
+                        <option value={plan.routes.length + 1}>New route</option>
+                      </select>
                     </li>
                   ))}
-                  {route.stops.length === 0 && <li className="empty">Nothing loaded yet.</li>}
                 </ol>
               </section>
             )
@@ -541,18 +535,77 @@ export default function App() {
         </main>
       </div>
 
+      {mapRoute && (
+        <RouteMap
+          vehicle={{ type: `Route ${mapRoute.number}` }}
+          boy={state.boys.find((b) => b.id === state.people[mapRoute.number])}
+          route={{
+            ...mapRoute,
+            stops: mapRoute.stops.map((s) => ({
+              ...s, name: s.name ? `${s.name}${s.note ? ' · ' + s.note : ''}` : s.note, summary: describeLines(s.lines),
+            })),
+          }}
+          depot={state.depot}
+          startTime={state.startTime}
+          onClose={() => setMapRouteNo(null)}
+          onLegs={applyLegs}
+        />
+      )}
+
+      {sendForm && sendClient && (
+        <div className="modal-backdrop" onClick={() => setSendForm(null)}>
+          <div className="modal modal-small" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <h2>Send today: {clientLabel(sendClient)}</h2>
+                {sendClient.address && sendClient.name && <p className="hint" style={{ margin: 0 }}>{sendClient.address}</p>}
+              </div>
+              <button className="btn-ghost" onClick={() => setSendForm(null)}>Close</button>
+            </div>
+            <div className="drop-form" style={{ marginTop: 12 }}>
+              <input placeholder="Gate / department for this drop (optional)" value={sendForm.note}
+                onChange={(e) => setSendForm((f) => ({ ...f, note: e.target.value }))} autoFocus />
+              {sendForm.lines.map((l, i) => (
+                <div className="row" key={i}>
+                  <select value={l.materialId} onChange={(e) => setSendForm((f) => ({ ...f, lines: f.lines.map((x, j) => (j === i ? { ...x, materialId: e.target.value } : x)) }))}>
+                    {state.materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                  <input type="number" min="1" placeholder="No." title="Number of boxes of this size" className="capacity-input" value={l.boxes}
+                    onChange={(e) => setSendForm((f) => ({ ...f, lines: f.lines.map((x, j) => (j === i ? { ...x, boxes: e.target.value } : x)) }))} />
+                  {sendForm.lines.length > 1 && (
+                    <button className="btn-ghost" onClick={() => setSendForm((f) => ({ ...f, lines: f.lines.filter((_, j) => j !== i) }))}>×</button>
+                  )}
+                </div>
+              ))}
+              <button className="btn-link" onClick={() => setSendForm((f) => ({ ...f, lines: [...f.lines, { materialId: state.materials[0]?.id, boxes: '1' }] }))}>+ another box size</button>
+              <div className="row">
+                <Field label="Minutes at this stop">
+                  <input type="number" min="0" value={sendForm.workMinutes}
+                    onChange={(e) => setSendForm((f) => ({ ...f, workMinutes: e.target.value }))} />
+                </Field>
+              </div>
+              <p className="hint">Same client, another gate or department? Press "Send today" on them again and give the second drop its own note.</p>
+              <div className="row">
+                <button className="btn-accent" onClick={confirmSend}>Add to today</button>
+                <button className="btn-outline" onClick={() => setSendForm(null)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {importOpen && (
         <div className="modal-backdrop" onClick={() => setImportOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h2>Import today's drops</h2>
+              <h2>Import client list</h2>
               <button className="btn-ghost" onClick={() => setImportOpen(false)}>Close</button>
             </div>
             {!importRows ? (
               <>
-                <p className="hint">Paste the list (one drop per line) or upload a file. Works with WhatsApp text, Excel (.xlsx), Word (.docx), CSV and .txt. If a line mentions a material you have added, like "6 boxes tiles", the boxes and material are picked up automatically.</p>
+                <p className="hint">Paste the list (one client per line) or upload a file. Works with WhatsApp text, Excel (.xlsx), Word (.docx), CSV and .txt. Name and address are split automatically; a spreadsheet with a header row (name / address / phone / minutes) is mapped by column.</p>
                 <textarea rows={8} value={importText} onChange={(e) => setImportText(e.target.value)}
-                  placeholder={'Sharma Tiles, 4th Block Jayanagar, 6 tiles, 2 cement\nRavi, 12th Main Indiranagar, 3 boxes, 15 min\n...'} />
+                  placeholder={'Sharma Tiles, 4th Block Jayanagar\nRavi Enterprises - 12th Main Indiranagar\nBosch, Adugodi, 20 min\n...'} />
                 <div className="row">
                   <button className="btn-accent" onClick={() => runImport(null)} disabled={!importText.trim()}>Read pasted text</button>
                   <button className="btn-outline" onClick={() => fileRef.current?.click()}>Upload file…</button>
@@ -563,11 +616,11 @@ export default function App() {
               </>
             ) : (
               <>
-                <p className="hint">Check what was read. Fix anything wrong, untick lines you don't want, then add them.</p>
+                <p className="hint">Check what was read. Fix anything wrong, untick lines you don't want, then add them to the client list.</p>
                 <div className="import-table-wrap">
                   <table className="import-table">
                     <thead>
-                      <tr><th></th><th>Name</th><th>Address</th><th>Material</th><th>Boxes</th><th>Min</th></tr>
+                      <tr><th></th><th>Name</th><th>Address</th><th>Gate / dept</th><th>Min</th></tr>
                     </thead>
                     <tbody>
                       {importRows.map((r) => (
@@ -575,19 +628,7 @@ export default function App() {
                           <td><input type="checkbox" checked={r.include} onChange={(e) => updateImportRow(r.key, { include: e.target.checked })} /></td>
                           <td><input value={r.name} onChange={(e) => updateImportRow(r.key, { name: e.target.value })} /></td>
                           <td><input value={r.address} onChange={(e) => updateImportRow(r.key, { address: e.target.value })} /></td>
-                          <td>
-                            {r.lines.map((l, i) => (
-                              <select key={i} value={l.materialId} onChange={(e) => updateImportRow(r.key, { lines: r.lines.map((x, j) => (j === i ? { ...x, materialId: e.target.value } : x)) })}>
-                                {state.materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                              </select>
-                            ))}
-                          </td>
-                          <td>
-                            {r.lines.map((l, i) => (
-                              <input key={i} type="number" min="1" className="capacity-input" value={l.boxes}
-                                onChange={(e) => updateImportRow(r.key, { lines: r.lines.map((x, j) => (j === i ? { ...x, boxes: e.target.value } : x)) })} />
-                            ))}
-                          </td>
+                          <td><input value={r.note} onChange={(e) => updateImportRow(r.key, { note: e.target.value })} /></td>
                           <td><input type="number" min="0" className="capacity-input" value={r.workMinutes} onChange={(e) => updateImportRow(r.key, { workMinutes: e.target.value })} /></td>
                         </tr>
                       ))}
@@ -595,7 +636,7 @@ export default function App() {
                   </table>
                 </div>
                 <div className="row">
-                  <button className="btn-accent" onClick={confirmImport}>Add {importRows.filter((r) => r.include).length} drops</button>
+                  <button className="btn-accent" onClick={confirmImport}>Add {importRows.filter((r) => r.include).length} clients</button>
                   <button className="btn-outline" onClick={() => setImportRows(null)}>Back</button>
                 </div>
               </>

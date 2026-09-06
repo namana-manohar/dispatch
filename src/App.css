@@ -395,3 +395,37 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .import-table td .capacity-input { width: 64px; min-width: 64px; }
 .import-table td select + select, .import-table td .capacity-input + .capacity-input { margin-top: 4px; display: block; }
 .import-table tr.excluded { opacity: 0.4; }
+
+/* --- map --- */
+.route-head-clickable { cursor: pointer; }
+.route-head-clickable:hover h3 { color: var(--accent); }
+.modal-map { width: min(1100px, 100%); }
+.map-canvas { height: min(60vh, 520px); border-radius: 8px; border: 1px solid var(--border); margin-top: 12px; background: #0f1319; }
+.stop-marker { background: none; border: none; }
+.stop-pin { width: 28px; height: 28px; border-radius: 50%; color: #1A1206; font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 13px; display: flex; align-items: center; justify-content: center; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.stop-pin.small { width: 22px; height: 22px; font-size: 11px; flex-shrink: 0; }
+.map-legend { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.map-legend li { display: flex; align-items: center; gap: 10px; }
+.leaflet-container { font-family: 'Inter', system-ui, sans-serif; }
+.leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border-radius: 8px; }
+.leaflet-popup-tip { background: var(--panel); }
+a.btn-outline, a.btn-accent { text-decoration: none; display: inline-flex; align-items: center; }
+.stat-text { font-size: 13px !important; white-space: nowrap; }
+
+/* --- clients / today --- */
+.btn-small { padding: 6px 10px; font-size: 13px; }
+.client-today { border-color: var(--accent) !important; }
+.modal-small { width: min(520px, 100%); }
+.modal .field input { width: 100%; }
+
+/* --- the answer --- */
+.answer { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 18px 20px; }
+.answer h2 { font-size: 22px; color: var(--accent); margin-bottom: 6px; }
+.answer p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.answer .warn-text { color: var(--warn); margin-top: 6px; }
+.details { margin-top: 12px; }
+.details summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.details .drop-form { margin-top: 10px; }
+.person-select { margin-top: 4px; padding: 5px 8px; font-size: 12px; }
+.move-select { padding: 5px 6px; font-size: 12px; max-width: 110px; }
+.route-stats { flex-wrap: wrap; row-gap: 8px; }
