@@ -17,6 +17,9 @@ function freshState() {
     clients: [],   // the whole client list, kept across days
     drops: [],     // today's deliveries, each pointing at a client
     people: {},    // route number -> boy id
+    peopleToday: 4,
+    porterToday: false,
+    useAll: false,
     avgSpeed: 25,
     startTime: '09:00',
     maxStops: 8,
@@ -126,17 +129,43 @@ export default function App() {
     return Object.entries(counts).map(([n, c]) => `${c} ${n.replace(/\s*boxe?s?$/i, '')}`).join(', ')
   }
 
-  // Today's drops with each client's name/address/pin folded in
+  // Today's drops with each client's name/address folded in. A drop that is
+  // collected elsewhere first becomes two stops: the pickup, then the delivery.
   const resolvedDrops = useMemo(() => state.drops.map((d) => {
     const c = clientById(d.clientId) || {}
-    return { ...d, name: c.name || '', address: c.address || '', lat: c.lat ?? null, lng: c.lng ?? null }
+    const pc = d.pickupClientId ? clientById(d.pickupClientId) : null
+    return {
+      ...d, jobId: d.id, kind: 'deliver', name: c.name || '', address: c.address || '', lat: c.lat ?? null, lng: c.lng ?? null,
+      pickupName: pc ? clientLabel(pc) : null, pickupLocated: pc ? hasCoords(pc) : true,
+    }
   }), [state.drops, state.clients]) // eslint-disable-line react-hooks/exhaustive-deps
+  const resolvedStops = useMemo(() => resolvedDrops.flatMap((d) => {
+    if (!d.pickupClientId) return [d]
+    const pc = clientById(d.pickupClientId) || {}
+    const pickup = {
+      ...d, id: `${d.id}:pickup`, kind: 'pickup', clientId: d.pickupClientId, note: '',
+      name: pc.name || '', address: pc.address || '', lat: pc.lat ?? null, lng: pc.lng ?? null,
+      workMinutes: pc.workMinutes ?? 10, deliverTo: d.name || d.address,
+    }
+    return [pickup, { ...d, after: pickup.id }]
+  }), [resolvedDrops]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // The plan: how many routes, who goes where, in what order
-  const plan = useMemo(() => planRoutes(resolvedDrops, {
-    depot: state.depot, avgSpeed: state.avgSpeed, startTime: state.startTime,
-    legCache: state.legCache, maxStops: state.maxStops, maxHours: state.maxHours,
-  }), [resolvedDrops, state.depot, state.avgSpeed, state.startTime, state.legCache, state.maxStops, state.maxHours])
+  // The plan: how many routes, who goes where, in what order.
+  // Drops with a Porter-only box size go on the Porter when one is available.
+  const plan = useMemo(() => {
+    const isPorterDrop = (d) => d.lines.some((l) => sizeById(l.materialId)?.porter)
+    const porterDrops = state.porterToday ? resolvedStops.filter(isPorterDrop) : []
+    const bikeDrops = state.porterToday ? resolvedStops.filter((d) => !isPorterDrop(d)) : resolvedStops
+    const common = { depot: state.depot, avgSpeed: state.avgSpeed, startTime: state.startTime, legCache: state.legCache }
+    const bikes = planRoutes(bikeDrops, { ...common, maxStops: state.maxStops, maxHours: state.maxHours, people: state.peopleToday || 0, useAll: state.useAll })
+    const porter = planRoutes(porterDrops, { ...common, maxStops: 999, maxHours: state.maxHours * 2 })
+    const routes = [
+      ...bikes.routes.map((r) => ({ ...r, kind: 'bike', label: `Route ${r.number}` })),
+      ...porter.routes.map((r, i) => ({ ...r, kind: 'porter', number: bikes.routes.length + i + 1, label: porter.routes.length > 1 ? `Porter trip ${i + 1}` : 'Porter' })),
+    ]
+    const porterNeeded = !state.porterToday && resolvedStops.filter(isPorterDrop).length
+    return { routes, bikeRoutes: bikes.routes, porterRoutes: porter.routes, unlocated: [...bikes.unlocated, ...porter.unlocated], needed: bikes.needed, squeezed: bikes.squeezed, porterNeeded }
+  }, [resolvedStops, state.depot, state.avgSpeed, state.startTime, state.legCache, state.maxStops, state.maxHours, state.peopleToday, state.porterToday, state.useAll, state.materials]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- start point & address lookup (Nominatim, one request at a time)
   const setDepotField = (patch) => setState((s) => ({ ...s, depot: { ...s.depot, ...patch } }))
@@ -194,9 +223,10 @@ export default function App() {
   })
   const addSize = () => {
     if (!sizeName.trim()) return
-    setState((s) => ({ ...s, materials: [...s.materials, { id: uid(), name: sizeName.trim() }] }))
+    setState((s) => ({ ...s, materials: [...s.materials, { id: uid(), name: sizeName.trim(), porter: false }] }))
     setSizeName('')
   }
+  const toggleSizePorter = (id) => setState((s) => ({ ...s, materials: s.materials.map((m) => (m.id === id ? { ...m, porter: !m.porter } : m)) }))
   const removeSize = (id) => setState((s) => {
     if (s.materials.length <= 1) return s
     const fallback = s.materials.find((m) => m.id !== id).id
@@ -227,7 +257,7 @@ export default function App() {
 
   // --- today's drops
   const openSend = (c) => setSendForm({
-    clientId: c.id, note: c.note || '', workMinutes: String(c.workMinutes ?? 10),
+    clientId: c.id, note: c.note || '', workMinutes: String(c.workMinutes ?? 10), pickupClientId: '',
     lines: [{ materialId: state.materials[0]?.id, boxes: '1' }],
   })
   const confirmSend = () => {
@@ -237,6 +267,7 @@ export default function App() {
       ...s,
       drops: [...s.drops, {
         id: uid(), clientId: sendForm.clientId, note: sendForm.note.trim(), pin: null,
+        pickupClientId: sendForm.pickupClientId || null,
         lines: lines.length ? lines : [{ materialId: s.materials[0].id, boxes: 1 }],
         workMinutes: parseInt(sendForm.workMinutes, 10) || 0,
       }],
@@ -247,6 +278,7 @@ export default function App() {
   const pinDrop = (id, routeNo) => setState((s) => ({
     ...s, drops: s.drops.map((d) => (d.id === id ? { ...d, pin: routeNo ? parseInt(routeNo, 10) : null } : d)),
   }))
+  const clientOptions = [...state.clients].sort((a, b) => clientLabel(a).localeCompare(clientLabel(b)))
   const resetPins = () => setState((s) => ({ ...s, drops: s.drops.map((d) => ({ ...d, pin: null })) }))
   const clearDrops = () => {
     if (state.drops.length && window.confirm("Clear today's drops? The client list, boys and box sizes stay.")) {
@@ -289,7 +321,12 @@ export default function App() {
   const visibleClients = q
     ? state.clients.filter((c) => `${c.name} ${c.address} ${c.note}`.toLowerCase().includes(q))
     : state.clients
-  const stopTitle = (s) => `${s.name || s.address}${s.note ? ` · ${s.note}` : ''}`
+  const stopTitle = (s) => {
+    const base = `${s.name || s.address}${s.note ? ` · ${s.note}` : ''}`
+    if (s.kind === 'pickup') return `Collect at ${base} (for ${s.deliverTo})`
+    if (s.pickupName) return `${base} · from ${s.pickupName}`
+    return base
+  }
   const stopSub = (s) => (s.name && s.address ? s.address : null)
   const sendClient = sendForm ? clientById(sendForm.clientId) : null
   const mapRoute = plan.routes.find((r) => r.number === mapRouteNo)
@@ -308,6 +345,14 @@ export default function App() {
           </div>
         </div>
         <div className="global-settings">
+          <Field label="People today">
+            <input type="number" min="1" value={state.peopleToday}
+              onChange={(e) => setState((s) => ({ ...s, peopleToday: parseInt(e.target.value, 10) || 1 }))} />
+          </Field>
+          <Field label="Porter today">
+            <label className="check"><input type="checkbox" checked={!!state.porterToday}
+              onChange={(e) => setState((s) => ({ ...s, porterToday: e.target.checked }))} /> {state.porterToday ? 'yes' : 'no'}</label>
+          </Field>
           <Field label="Day start">
             <input type="time" value={state.startTime}
               onChange={(e) => setState((s) => ({ ...s, startTime: e.target.value }))} />
@@ -390,10 +435,11 @@ export default function App() {
                 <li key={d.id}>
                   <div className="drop-info">
                     <span>{stopTitle(d)}</span>
-                    <small>{describeLines(d.lines)} · {d.workMinutes}m{hasCoords(d) ? '' : ' · not on map yet'}</small>
+                    <small>{describeLines(d.lines)} · {d.workMinutes}m{hasCoords(d) && d.pickupLocated ? '' : ' · not on map yet'}</small>
                   </div>
                   <div className="row">
                     {!hasCoords(d) && <button className="btn-ghost" onClick={() => locateClient(d.clientId)}>Locate</button>}
+                    {hasCoords(d) && !d.pickupLocated && <button className="btn-ghost" onClick={() => locateClient(d.pickupClientId)}>Locate pickup</button>}
                     <button className="btn-ghost" onClick={() => removeDrop(d.id)}>×</button>
                   </div>
                 </li>
@@ -449,10 +495,12 @@ export default function App() {
                   {state.materials.map((m) => (
                     <li key={m.id}>
                       <span>{m.name}</span>
+                      <label className="check" title="Boxes of this size go on the Porter, not on a bike"><input type="checkbox" checked={!!m.porter} onChange={() => toggleSizePorter(m.id)} /> by Porter</label>
                       <button className="btn-ghost" onClick={() => removeSize(m.id)} disabled={state.materials.length <= 1}>×</button>
                     </li>
                   ))}
                 </ul>
+                <p className="hint">Tick "by Porter" on sizes too big for a bike. When a Porter is available (top bar), those drops go on the Porter route.</p>
               </>
             )}
           </section>
@@ -472,11 +520,33 @@ export default function App() {
               </>
             ) : (
               <>
-                <h2>Send {plan.routes.length} {plan.routes.length === 1 ? 'person' : 'people'} on {plan.routes.length} route{plan.routes.length > 1 ? 's' : ''}</h2>
+                <h2>
+                  {plan.bikeRoutes.length > 0 && `Send ${plan.bikeRoutes.length} ${plan.bikeRoutes.length === 1 ? 'person' : 'people'} on ${plan.bikeRoutes.length} route${plan.bikeRoutes.length > 1 ? 's' : ''}`}
+                  {plan.bikeRoutes.length > 0 && plan.porterRoutes.length > 0 && ' + '}
+                  {plan.porterRoutes.length > 0 && `Porter: ${plan.porterRoutes.length === 1 ? `1 trip, ${plan.porterRoutes[0].stops.length} stops` : `${plan.porterRoutes.length} trips`}`}
+                </h2>
                 <p>
                   {state.drops.length} drops · {totalBoxes} boxes ({sizeBreakdown(state.drops)}) · at most {state.maxStops} stops and {state.maxHours}h per person
                   {!hasCoords(state.depot) && ' · shop address not set, so routes start at the first stop'}
                 </p>
+                {plan.squeezed && (
+                  <p className="warn-text">Within your limits this needs {plan.needed} people; you have {state.peopleToday}. Shared over {state.peopleToday} instead, so the routes marked over the limit run long. Raise the limits, add a person, or book a Porter.</p>
+                )}
+                {!plan.squeezed && plan.needed > 0 && state.peopleToday > plan.needed && !state.useAll && (
+                  <p>
+                    Only {plan.needed} {plan.needed === 1 ? 'person is' : 'people are'} needed today. You have {state.peopleToday}.{' '}
+                    <button className="btn-link inline" onClick={() => setState((x) => ({ ...x, useAll: true }))}>Use all {state.peopleToday} and everyone finishes earlier</button>
+                  </p>
+                )}
+                {!plan.squeezed && state.useAll && plan.bikeRoutes.length > plan.needed && (
+                  <p>
+                    Spread over all {state.peopleToday} people; {plan.needed} would have been enough.{' '}
+                    <button className="btn-link inline" onClick={() => setState((x) => ({ ...x, useAll: false }))}>Use the fewest people instead</button>
+                  </p>
+                )}
+                {plan.porterNeeded > 0 && (
+                  <p className="warn-text">{plan.porterNeeded} drop{plan.porterNeeded > 1 ? 's have' : ' has'} Porter-only boxes but no Porter today, so they are in the bike routes. Tick "Porter today" to split them out.</p>
+                )}
                 {plan.unlocated.length > 0 && (
                   <p className="warn-text">{plan.unlocated.length} drop{plan.unlocated.length > 1 ? 's' : ''} not on the map yet, not in any route: {plan.unlocated.map(stopTitle).join(', ')}. Press Locate on them.</p>
                 )}
@@ -489,10 +559,10 @@ export default function App() {
             const person = state.boys.find((b) => b.id === state.people[r.number])
             const boxes = r.stops.reduce((sum, s) => sum + boxesOfLines(s.lines), 0)
             return (
-              <section className="route-card" key={r.number}>
+              <section className={`route-card${r.kind === 'porter' ? ' porter-card' : ''}${r.overLimit ? ' over-capacity' : ''}`} key={r.number}>
                 <div className="route-head route-head-clickable" onClick={() => setMapRouteNo(r.number)} title="Show this route on the map">
                   <div>
-                    <h3>Route {r.number}</h3>
+                    <h3>{r.label}</h3>
                     <select className="person-select" value={state.people[r.number] || ''} onClick={(e) => e.stopPropagation()} onChange={(e) => setRoutePerson(r.number, e.target.value)}>
                       <option value="">Who takes this?</option>
                       {state.boys.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
@@ -508,6 +578,9 @@ export default function App() {
                     <div><strong>{r.hasStart ? r.backTime : r.finishTime}</strong><span>{r.hasStart ? 'back at shop' : 'last stop done'}</span></div>
                   </div>
                 </div>
+                {r.overLimit && (
+                  <p className="hint warn">Over the limit: {r.stops.length} stops, {(r.totalMin / 60).toFixed(1)}h. Move a stop elsewhere, or raise the limits if that is fine.</p>
+                )}
                 <ol className="stops">
                   {r.stops.map((s, i) => (
                     <li key={s.id}>
@@ -521,10 +594,10 @@ export default function App() {
                         <small>{describeLines(s.lines)} · {s.travelMin > 0 && `${s.travelKm.toFixed(1)}km · `}{s.workMinutes}m work</small>
                       </div>
                       <a className="btn-ghost" href={mapsLink(s)} target="_blank" rel="noreferrer" title="Open in Google Maps">Map</a>
-                      <select className="move-select" value={s.pin || ''} onChange={(e) => pinDrop(s.id, e.target.value)} title="Move this stop to another route">
+                      <select className="move-select" value={s.pin || ''} onChange={(e) => pinDrop(s.jobId || s.id, e.target.value)} title="Move this stop to another route">
                         <option value="">{s.pin ? 'Auto' : 'Move…'}</option>
-                        {plan.routes.map((o) => <option key={o.number} value={o.number}>Route {o.number}</option>)}
-                        <option value={plan.routes.length + 1}>New route</option>
+                        {plan.bikeRoutes.map((o) => <option key={o.number} value={o.number}>Route {o.number}</option>)}
+                        <option value={plan.bikeRoutes.length + 1}>New route</option>
                       </select>
                     </li>
                   ))}
@@ -537,7 +610,7 @@ export default function App() {
 
       {mapRoute && (
         <RouteMap
-          vehicle={{ type: `Route ${mapRoute.number}` }}
+          vehicle={{ type: mapRoute.label }}
           boy={state.boys.find((b) => b.id === state.people[mapRoute.number])}
           route={{
             ...mapRoute,
@@ -565,6 +638,14 @@ export default function App() {
             <div className="drop-form" style={{ marginTop: 12 }}>
               <input placeholder="Gate / department for this drop (optional)" value={sendForm.note}
                 onChange={(e) => setSendForm((f) => ({ ...f, note: e.target.value }))} autoFocus />
+              <div className="row">
+                <select value={sendForm.pickupClientId} onChange={(e) => setSendForm((f) => ({ ...f, pickupClientId: e.target.value }))} title="Collect the boxes somewhere else first">
+                  <option value="">Boxes come from the shop</option>
+                  {clientOptions.filter((c) => c.id !== sendForm.clientId).map((c) => (
+                    <option key={c.id} value={c.id}>Collect first from {clientLabel(c)}{c.name && c.address ? ` (${c.address})` : ''}</option>
+                  ))}
+                </select>
+              </div>
               {sendForm.lines.map((l, i) => (
                 <div className="row" key={i}>
                   <select value={l.materialId} onChange={(e) => setSendForm((f) => ({ ...f, lines: f.lines.map((x, j) => (j === i ? { ...x, materialId: e.target.value } : x)) }))}>

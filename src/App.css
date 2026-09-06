@@ -429,3 +429,8 @@ a.btn-outline, a.btn-accent { text-decoration: none; display: inline-flex; align
 .person-select { margin-top: 4px; padding: 5px 8px; font-size: 12px; }
 .move-select { padding: 5px 6px; font-size: 12px; max-width: 110px; }
 .route-stats { flex-wrap: wrap; row-gap: 8px; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); padding: 9px 0; cursor: pointer; white-space: nowrap; }
+.check input { width: auto; margin: 0; }
+.porter-card { border-color: #3FB68B; }
+.porter-card h3 { color: #3FB68B; }
+.btn-link.inline { display: inline; padding: 0; font-size: inherit; text-decoration: underline; }

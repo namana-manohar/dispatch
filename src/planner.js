@@ -1,7 +1,12 @@
-// Turns today's located drops into routes automatically.
-// Method: sweep around the shop (sort by bearing), fill a route until it
-// hits the stop or time limit, then start the next. Every sweep start is
-// tried and the plan with the fewest routes (then least time) wins.
+// Turns today's located stops into routes automatically.
+//
+// 1. Stops that must travel together (same client's gates, a pickup and its
+//    delivery) are bound into units.
+// 2. A first grouping sweeps around the shop by bearing.
+// 3. An improvement pass moves and swaps units between routes while the
+//    total time (and the longest route) keeps dropping.
+// 4. Inside each route, stops are ordered nearest-first, then untangled with
+//    2-opt. A delivery never comes before its pickup.
 
 import { legKey } from './geo.js'
 
@@ -24,40 +29,92 @@ function legMinutes(a, b, avgSpeed, legCache) {
   return { km, min: (km / avgSpeed) * 60 }
 }
 
-function nearestNeighborOrder(drops, start) {
-  if (drops.length <= 1) return [...drops]
-  const remaining = [...drops]
-  const route = []
-  if (!start) route.push(remaining.shift())
-  while (remaining.length) {
-    const last = route.length ? route[route.length - 1] : start
-    let bestIdx = 0
-    let bestDist = Infinity
-    remaining.forEach((d, i) => {
-      // same client, another gate: keep together
-      const dist = haversineKm(last, d) + (last.clientId && last.clientId === d.clientId ? -1 : 0)
-      if (dist < bestDist) { bestDist = dist; bestIdx = i }
-    })
-    route.push(remaining.splice(bestIdx, 1)[0])
-  }
-  return route
-}
-
 function addMinutes(timeStr, minsToAdd) {
   const [h, m] = timeStr.split(':').map(Number)
   const total = h * 60 + m + Math.round(minsToAdd)
   return `${String(Math.floor((total / 60) % 24)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
+// ---------- ordering inside one route ----------
+
+function precedenceOk(order) {
+  const seen = new Set()
+  for (const s of order) {
+    if (s.after && !seen.has(s.after)) return false
+    seen.add(s.id)
+  }
+  return true
+}
+
+function routeMinutes(order, start, avgSpeed, legCache) {
+  let min = 0
+  let prev = start
+  for (const s of order) {
+    if (prev) min += legMinutes(prev, s, avgSpeed, legCache).min
+    prev = s
+  }
+  if (start && order.length) min += legMinutes(order[order.length - 1], start, avgSpeed, legCache).min
+  return min
+}
+
+// Nearest-first. A delivery is only eligible once its pickup is visited.
+function nearestNeighborOrder(stops, start, avgSpeed, legCache) {
+  if (stops.length <= 1) return [...stops]
+  const remaining = [...stops]
+  const route = []
+  const visited = new Set()
+  while (remaining.length) {
+    const last = route.length ? route[route.length - 1] : start
+    let bestIdx = -1
+    let bestCost = Infinity
+    remaining.forEach((s, i) => {
+      if (s.after && !visited.has(s.after)) return
+      let cost = last ? legMinutes(last, s, avgSpeed, legCache).min : i
+      if (last && last.clientId && last.clientId === s.clientId) cost -= 5 // same client, another gate
+      if (cost < bestCost) { bestCost = cost; bestIdx = i }
+    })
+    if (bestIdx < 0) bestIdx = 0
+    const next = remaining.splice(bestIdx, 1)[0]
+    route.push(next)
+    visited.add(next.id)
+  }
+  return route
+}
+
+// 2-opt: reverse segments while the route gets shorter.
+function twoOpt(order, start, avgSpeed, legCache) {
+  if (order.length < 4) return order
+  let best = order
+  let bestMin = routeMinutes(best, start, avgSpeed, legCache)
+  let improved = true
+  let guard = 0
+  while (improved && guard++ < 50) {
+    improved = false
+    for (let i = 0; i < best.length - 1; i++) {
+      for (let k = i + 1; k < best.length; k++) {
+        const cand = [...best.slice(0, i), ...best.slice(i, k + 1).reverse(), ...best.slice(k + 1)]
+        if (!precedenceOk(cand)) continue
+        const m = routeMinutes(cand, start, avgSpeed, legCache)
+        if (m + 0.01 < bestMin) { best = cand; bestMin = m; improved = true }
+      }
+    }
+  }
+  return best
+}
+
 // Order the stops of one route and work out its timeline.
-export function buildRoute(drops, { start, avgSpeed, startTime, legCache, manualOrder }) {
-  const located = drops.every(hasCoords)
-  const ordered = located && !manualOrder ? nearestNeighborOrder(drops, start) : [...drops]
+export function buildRoute(stops, { start, avgSpeed, startTime, legCache, manualOrder }) {
+  const located = stops.every(hasCoords)
+  let ordered = [...stops]
+  if (located && !manualOrder) {
+    ordered = nearestNeighborOrder(stops, start, avgSpeed, legCache)
+    ordered = twoOpt(ordered, start, avgSpeed, legCache)
+  }
   let clock = startTime
   let totalKm = 0
   let travelMin = 0
   let workMin = 0
-  const stops = ordered.map((d, i) => {
+  const out = ordered.map((d, i) => {
     const prev = i > 0 ? ordered[i - 1] : start
     let leg = { km: 0, min: 0 }
     if (located && prev) leg = legMinutes(prev, d, avgSpeed, legCache)
@@ -76,13 +133,13 @@ export function buildRoute(drops, { start, avgSpeed, startTime, legCache, manual
     backMin = back.min
     backKm = back.km
   }
-  const finishTime = clock
-  const backTime = addMinutes(clock, backMin)
   return {
-    stops, located, totalKm: totalKm + backKm, travelMin: travelMin + backMin, workMin,
-    totalMin: travelMin + workMin + backMin, finishTime, backTime, hasStart: !!start,
+    stops: out, located, totalKm: totalKm + backKm, travelMin: travelMin + backMin, workMin,
+    totalMin: travelMin + workMin + backMin, finishTime: clock, backTime: addMinutes(clock, backMin), hasStart: !!start,
   }
 }
+
+// ---------- grouping into routes ----------
 
 function bearing(center, p) {
   return Math.atan2(p.lng - center.lng, p.lat - center.lat)
@@ -90,62 +147,151 @@ function bearing(center, p) {
 
 function centroid(points) {
   const n = points.length || 1
-  return {
-    lat: points.reduce((s, p) => s + p.lat, 0) / n,
-    lng: points.reduce((s, p) => s + p.lng, 0) / n,
-  }
+  return { lat: points.reduce((s, p) => s + p.lat, 0) / n, lng: points.reduce((s, p) => s + p.lng, 0) / n }
 }
 
 function fits(route, limits) {
   return route.stops.length <= limits.maxStops && route.totalMin <= limits.maxHours * 60
 }
 
-function sweepPlan(drops, offset, opts, limits) {
+// Stops at one client, and a pickup with its delivery, travel as one unit.
+function makeUnits(stops) {
+  const parent = new Map()
+  const find = (x) => { while (parent.get(x) !== x) x = parent.get(x); return x }
+  const union = (a, b) => { parent.set(find(a), find(b)) }
+  stops.forEach((s) => parent.set(s.id, s.id))
+  const byClient = new Map()
+  const byJob = new Map()
+  stops.forEach((s) => {
+    if (s.clientId) { if (byClient.has(s.clientId)) union(s.id, byClient.get(s.clientId)); else byClient.set(s.clientId, s.id) }
+    if (s.jobId) { if (byJob.has(s.jobId)) union(s.id, byJob.get(s.jobId)); else byJob.set(s.jobId, s.id) }
+  })
+  const groups = new Map()
+  stops.forEach((s) => { const r = find(s.id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(s) })
+  return [...groups.values()]
+}
+
+function sweepUnits(units, offset, opts, limits) {
   const routes = []
   let current = []
-  for (let k = 0; k < drops.length; k++) {
-    const d = drops[(offset + k) % drops.length]
-    const trial = buildRoute([...current, d], opts)
-    if (current.length && !fits(trial, limits)) {
-      routes.push(current)
-      current = [d]
-    } else {
-      current.push(d)
-    }
+  for (let k = 0; k < units.length; k++) {
+    const u = units[(offset + k) % units.length]
+    const trial = buildRoute([...current.flat(), ...u], opts)
+    if (current.length && !fits(trial, limits)) { routes.push(current); current = [u] }
+    else current.push(u)
   }
   if (current.length) routes.push(current)
   return routes
 }
 
-// drops: today's drops with lat/lng folded in. Returns { routes, unlocated }.
-// A drop with `pin` = route number is kept in that route regardless.
-export function planRoutes(drops, { depot, avgSpeed, startTime, legCache, maxStops, maxHours }) {
-  const located = drops.filter(hasCoords)
-  const unlocated = drops.filter((d) => !hasCoords(d))
+function chunkUnits(units, offset, count) {
+  const n = units.length
+  const groups = []
+  for (let g = 0; g < count; g++) {
+    const from = Math.round((g * n) / count)
+    const to = Math.round(((g + 1) * n) / count)
+    const grp = []
+    for (let k = from; k < to; k++) grp.push(units[(offset + k) % n])
+    if (grp.length) groups.push(grp)
+  }
+  return groups
+}
+
+// Lower is better: total time, a share of the longest route (fairness),
+// and a heavy penalty for breaking the limits unless we were told to.
+// When we are told how many people to use, the point is that everyone
+// finishes early, so the longest route weighs much more.
+function score(groups, opts, limits, strict) {
+  const routes = groups.map((g) => buildRoute(g.flat(), opts))
+  const total = routes.reduce((s, r) => s + r.totalMin, 0)
+  const longest = routes.reduce((m, r) => Math.max(m, r.totalMin), 0)
+  const broken = strict ? routes.filter((r) => !fits(r, limits)).length : 0
+  const fairness = strict ? 0.5 : 10
+  return total + fairness * longest + broken * 10000
+}
+
+// Move single units between routes, and swap pairs, while the score drops.
+function improve(groups, opts, limits, strict) {
+  let best = groups.map((g) => [...g])
+  let bestScore = score(best, opts, limits, strict)
+  let improved = true
+  let guard = 0
+  while (improved && guard++ < 400) {
+    improved = false
+    for (let a = 0; a < best.length; a++) {
+      for (let i = 0; i < best[a].length; i++) {
+        // relocate unit i of route a into route b
+        for (let b = 0; b < best.length; b++) {
+          if (a === b || best[a].length === 1) continue
+          const cand = best.map((g) => [...g])
+          const [u] = cand[a].splice(i, 1)
+          cand[b].push(u)
+          const sc = score(cand, opts, limits, strict)
+          if (sc + 0.01 < bestScore) { best = cand; bestScore = sc; improved = true; break }
+        }
+        if (improved) break
+        // swap unit i of route a with unit j of route b
+        for (let b = a + 1; b < best.length && !improved; b++) {
+          for (let j = 0; j < best[b].length; j++) {
+            const cand = best.map((g) => [...g])
+            const ua = cand[a][i]
+            cand[a][i] = cand[b][j]
+            cand[b][j] = ua
+            const sc = score(cand, opts, limits, strict)
+            if (sc + 0.01 < bestScore) { best = cand; bestScore = sc; improved = true; break }
+          }
+        }
+        if (improved) break
+      }
+      if (improved) break
+    }
+  }
+  return best
+}
+
+function bestSweep(stops, start, opts, limits, forceCount) {
+  if (!stops.length) return []
+  const center = start || centroid(stops)
+  const units = makeUnits(stops).sort((a, b) => bearing(center, a[0]) - bearing(center, b[0]))
+  const tries = Math.min(units.length, 40)
+  let best = null
+  for (let o = 0; o < tries; o++) {
+    const offset = Math.round((o * units.length) / tries)
+    const groups = forceCount ? chunkUnits(units, offset, Math.min(forceCount, units.length)) : sweepUnits(units, offset, opts, limits)
+    const sc = score(groups, opts, limits, !forceCount)
+    if (!best || groups.length < best.groups.length || (groups.length === best.groups.length && sc < best.sc)) best = { groups, sc }
+  }
+  return improve(best.groups, opts, limits, !forceCount).map((g) => g.flat())
+}
+
+// stops: today's stops with lat/lng folded in. Returns { routes, unlocated }.
+// A stop with `pin` = route number is kept in that route regardless.
+// `people`: how many are available. If the limits would need more routes
+// than that, the stops are shared over exactly `people` routes and the
+// routes over the limits are flagged. `useAll` spreads over everyone even
+// when fewer would do.
+export function planRoutes(stops, { depot, avgSpeed, startTime, legCache, maxStops, maxHours, people, useAll }) {
+  const located = stops.filter(hasCoords)
+  const unlocated = stops.filter((d) => !hasCoords(d))
   const start = hasCoords(depot) ? depot : null
   const opts = { start, avgSpeed, startTime, legCache }
   const limits = { maxStops: Math.max(1, maxStops || 8), maxHours: Math.max(0.5, maxHours || 4) }
 
-  const pinned = located.filter((d) => Number.isInteger(d.pin) && d.pin >= 1)
-  const free = located.filter((d) => !(Number.isInteger(d.pin) && d.pin >= 1))
+  const isPinned = (d) => Number.isInteger(d.pin) && d.pin >= 1
+  const pinned = located.filter(isPinned)
+  const free = located.filter((d) => !isPinned(d))
 
-  let best = null
-  if (free.length) {
-    const center = start || centroid(free)
-    const sorted = [...free].sort((a, b) => bearing(center, a) - bearing(center, b))
-    const tries = Math.min(sorted.length, 40)
-    for (let o = 0; o < tries; o++) {
-      const offset = Math.round((o * sorted.length) / tries)
-      const groups = sweepPlan(sorted, offset, opts, limits)
-      const totalMin = groups.reduce((s, g) => s + buildRoute(g, opts).totalMin, 0)
-      if (!best || groups.length < best.groups.length || (groups.length === best.groups.length && totalMin < best.totalMin)) {
-        best = { groups, totalMin }
-      }
-    }
+  let groups = bestSweep(free, start, opts, limits)
+  const needed = groups.length
+  let squeezed = false
+  const unitCount = makeUnits(free).length
+  if (people && needed > people) {
+    groups = bestSweep(free, start, opts, limits, people)
+    squeezed = true
+  } else if (people && useAll && needed < people && unitCount >= people) {
+    groups = bestSweep(free, start, opts, limits, people)
   }
-  const groups = best ? best.groups : []
 
-  // Pinned drops go to their route number, creating routes if needed.
   pinned.forEach((d) => {
     while (groups.length < d.pin) groups.push([])
     groups[d.pin - 1].push(d)
@@ -154,7 +300,7 @@ export function planRoutes(drops, { depot, avgSpeed, startTime, legCache, maxSto
   const routes = groups
     .map((g, i) => ({ number: i + 1, ...buildRoute(g, opts) }))
     .filter((r) => r.stops.length > 0)
-    .map((r, i) => ({ ...r, number: i + 1 }))
+    .map((r, i) => ({ ...r, number: i + 1, overLimit: !fits(r, limits) }))
 
-  return { routes, unlocated, limits }
+  return { routes, unlocated, limits, needed, squeezed }
 }
