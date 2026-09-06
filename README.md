@@ -25,6 +25,14 @@ Road distances and times come from OpenStreetMap routing once a route's map has 
 
 Data is saved in the browser (localStorage). No login, no server. Address lookup uses OpenStreetMap's Nominatim, road routing the public OSRM server. Both are free and rate-limited, so lookups run one per second.
 
+## Google Maps (optional, recommended)
+
+With a Google Maps Platform key the app uses Google for shop-name suggestions as you type, place lookup, address geocoding and road routes. Without it, it falls back to OpenStreetMap services (free, weaker on shop names).
+
+1. In Google Cloud, create a project, enable **Places API (New)**, **Geocoding API** and **Routes API**, attach billing (India's free allowance covers far more than this app uses).
+2. Create an API key. Restrict it: *Application restrictions* → HTTP referrers → `https://dispatch-seven-xi.vercel.app/*` and `http://localhost:5174/*`; *API restrictions* → the three APIs above.
+3. Set it as `VITE_GOOGLE_MAPS_KEY` (Vercel env var, or `.env.local` for local runs) and redeploy.
+
 ## Run locally
 
 Needs Node.js 18+.

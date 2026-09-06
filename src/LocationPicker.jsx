@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { geocode, currentPosition, hasCoords } from './geo.js'
+import { googleEnabled, googleAutocomplete, googlePlaceDetails } from './google.js'
 
 const pinIcon = L.divIcon({ className: 'stop-marker', html: '<div class="stop-pin" style="background:#F2A93B">●</div>', iconSize: [28, 28], iconAnchor: [14, 14] })
 
@@ -15,6 +16,34 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
   const [point, setPoint] = useState(hasCoords(initial) ? { lat: initial.lat, lng: initial.lng } : null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  const [suggestions, setSuggestions] = useState([])
+  const suggestTimer = useRef(null)
+  const cityRef = useRef(null)
+
+  // Google suggestions as you type (only when a Google key is set)
+  const onQuery = (value) => {
+    setQuery(value)
+    if (!googleEnabled) return
+    clearTimeout(suggestTimer.current)
+    if (value.trim().length < 2) { setSuggestions([]); return }
+    suggestTimer.current = setTimeout(async () => {
+      try {
+        const near = point || cityRef.current
+        setSuggestions(await googleAutocomplete(value, near))
+      } catch (e) { setMsg(e.message) }
+    }, 300)
+  }
+  const chooseSuggestion = async (sug) => {
+    setSuggestions([])
+    setQuery(sug.text)
+    setBusy(true)
+    setMsg('Fetching the spot…')
+    try {
+      const hit = await googlePlaceDetails(sug.placeId)
+      place(hit, 17)
+      setMsg(`${hit.label}. Drag the pin if it is not exact.`)
+    } catch (e) { setMsg(e.message) } finally { setBusy(false) }
+  }
 
   const place = (p, zoom) => {
     setPoint(p)
@@ -40,7 +69,7 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
     if (point) place(point, 16)
     else {
       map.setView([12.9716, 77.5946], 11)
-      geocode(city || 'Bengaluru').then((c) => { if (c && !markerRef.current) map.setView([c.lat, c.lng], 12) }).catch(() => {})
+      geocode(city || 'Bengaluru').then((c) => { cityRef.current = c; if (c && !markerRef.current) map.setView([c.lat, c.lng], 12) }).catch(() => {})
     }
     setTimeout(() => map.invalidateSize(), 50)
     return () => { map.remove(); mapRef.current = null; markerRef.current = null }
@@ -49,6 +78,7 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
 
   const search = async () => {
     if (!query.trim()) return
+    setSuggestions([])
     setBusy(true)
     setMsg('Searching…')
     try {
@@ -75,11 +105,21 @@ export default function LocationPicker({ title, initial, city, onPick, onClose }
           <h2>{title || 'Pick the spot on the map'}</h2>
           <button className="btn-ghost" onClick={onClose}>Close</button>
         </div>
-        <div className="row">
-          <input placeholder="Shop name, area or address… or paste a Google Maps link" value={query}
-            onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} />
+        <div className="row suggest-wrap">
+          <input placeholder={googleEnabled ? 'Type the shop name or address…' : 'Shop name, area or address… or paste a Google Maps link'} value={query}
+            onChange={(e) => onQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} autoComplete="off" />
           <button className="btn-outline" onClick={search} disabled={busy || !query.trim()}>Search</button>
           <button className="btn-outline" onClick={useMine} disabled={busy} title="Use this phone's GPS">Use my location</button>
+          {suggestions.length > 0 && (
+            <ul className="suggest-list">
+              {suggestions.map((sug) => (
+                <li key={sug.placeId} onClick={() => chooseSuggestion(sug)}>
+                  <span>{sug.text}</span>
+                  {sug.secondary && <small>{sug.secondary}</small>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <p className="hint">{msg || 'Search, or tap the exact spot on the map. You can drag the pin.'}</p>
         <div ref={mapEl} className="map-canvas" />

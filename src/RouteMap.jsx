@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { hasCoords, osrmRoute, googleDirectionsLegs, routeShareText, whatsappUrl } from './geo.js'
+import { hasCoords, roadRoute, googleDirectionsLegs, routeShareText, whatsappUrl } from './geo.js'
 
 const numberIcon = (n, color) =>
   L.divIcon({
@@ -70,7 +70,7 @@ export default function RouteMap({ vehicle, boy, route, depot, startTime, onClos
     setRoad(null)
     if (points.length < 2) { setStatus(''); return }
     setStatus('Fetching road route…')
-    osrmRoute(points)
+    roadRoute(points)
       .then((r) => {
         if (cancelled) return
         setRoad(r)

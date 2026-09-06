@@ -2,6 +2,8 @@
 // OSRM public demo server for road routes. Both are free, no API key,
 // but rate-limited — lookups are run one at a time with a pause.
 
+import { googleEnabled, googleGeocode, googleTextSearch, googleRoute } from './google.js'
+
 export const hasCoords = (d) =>
   d && typeof d.lat === 'number' && typeof d.lng === 'number' && !isNaN(d.lat) && !isNaN(d.lng)
 
@@ -61,6 +63,13 @@ export async function geocode(address, city) {
   const direct = parseCoords(a)
   if (direct) return { ...direct, label: a }
   const withCity = city && !a.toLowerCase().includes(city.toLowerCase()) ? `${a}, ${city}` : a
+  if (googleEnabled) {
+    // Google knows shop names: try the place search first, then the address geocoder.
+    const near = await cityPoint(city)
+    const place = await googleTextSearch(withCity, near)
+    if (place) return place
+    return googleGeocode(withCity, near)
+  }
   let hit = null
   let firstError = null
   try { hit = await nominatim(withCity) } catch (e) { firstError = e }
@@ -108,6 +117,9 @@ export async function osrmRoute(points) {
     min: r.duration / 60,
   }
 }
+
+// Road route: Google when a key is set, else the free OSRM demo server.
+export const roadRoute = (points) => (googleEnabled ? googleRoute(points, legKey) : osrmRoute(points))
 
 const pointText = (p) => (hasCoords(p) ? `${p.lat},${p.lng}` : p.address || p.name || '')
 
