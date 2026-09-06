@@ -1,19 +1,23 @@
 # Dispatch Planner
 
-For a small delivery business. You pick which clients get a delivery today; the app tells you **how many people to send and the route for each one**.
+For a small delivery business. You pick which clients get a delivery today; the app tells you **how many people to send, how many autos and Porters to book, and the route for each one**.
+
+Live: https://dispatch-seven-xi.vercel.app
 
 ## How a day works
 
-1. **Once:** import the whole client list (paste from WhatsApp, or upload Excel / Word / CSV / text). Press **Locate all** so every client is on the map. Under *Setup*, type the shop address and press Locate, add the delivery boys' names, and tick "by Porter" on box sizes too big for a bike. All of this is remembered. Two clients with the same name at different addresses are simply two entries; the address is shown under the name.
-2. **Each morning:** set how many people are available and whether a Porter is booked (top bar). Press **Send today** on each client getting a delivery: gate or department if the client has several, box sizes and counts, and "Collect first from …" if the boxes are picked up somewhere else. The same client can be sent to more than once.
-3. **Read the answer:** "Send 3 people on 3 routes + Porter: 1 trip, 6 stops". Each route card shows the stops in order, arrival times, boxes by size, distance, and when the person is back at the shop. Press **Map** for the route on a map, **Open in Google Maps** for turn-by-turn, **Send on WhatsApp** to hand the route to the delivery boy.
+1. **Once:** import the whole client list (paste from WhatsApp, or upload Excel / Word / CSV / text). Press **Locate all** so every client is on the map. Type the **Loading point** (where the boys load and start) at the top of the plan and press Locate. Under *Setup*, add the delivery boys' names and tick "by Porter" on box sizes too big for a bike. All of this is remembered. Two clients with the same name at different addresses are simply two entries; the address is shown under the name.
+2. **Each morning:** in the top bar set how many people, autos and Porters you have today. Press **Send today** on each client getting a delivery: gate or department if the client has several, box sizes and counts, ⚡ urgent if it must reach within the urgent window (1–3 h, set at the top), "Collect first from …" if the boxes are picked up somewhere else, or "Collect only" for cheques and returns. The same client can be sent to more than once.
+3. **Read the answer:** "Send 3 people on 3 routes + book 1 auto + 1 Porter (6 stops)". If the plan needs more autos or Porters than you entered, it says how many more to book. Each route card shows the stops in order, arrival times, boxes by size, distance, and when the person is back. Press **Map** for the route on a map, **Navigate** for turn-by-turn in Google Maps (long routes get one link per ten stops), **WhatsApp** to hand the route to the delivery boy.
 
 ## What the planner guarantees
 
 - All drops at one client (different gates or departments) go to the same person, one after another.
 - A pickup is always visited before its delivery, by the same person.
-- Drops with Porter-only boxes go on the Porter route when a Porter is booked. Without one they are planned with the rest and flagged.
-- Routes stay under the *max stops* and *max hours* per person set at the top. If that needs more people than you have, the work is shared over the people you have and the routes that run over are marked.
+- ⚡ Urgent stops go first on their route and are spread across routes so each is reached within the urgent window. If one still cannot make it, the plan says so.
+- Collect-only stops (cheques, returns) come after the drops on their route.
+- Drops with Porter-only boxes go on Porter trips.
+- Routes stay under the *max stops* and *max hours* per person. If that needs more routes than you have people, the longest extra routes go to hired autos.
 - Fewest people by default. "Use all N" spreads the drops evenly so everyone finishes early.
 - Stops are ordered nearest-first and then untangled, so a route does not zigzag across the city. If you still disagree, use **Move…** on a stop to put it on another route.
 
@@ -38,14 +42,13 @@ node scripts/plan-scenario.mjs
 
 ## Deploy to Vercel
 
-The Vercel CLI is a dev dependency, so no global install is needed.
+Project `dispatch` in the "drop" team (scope `drop22`). The Vercel CLI is a dev dependency.
 
 ```bash
-npx vercel login        # sign in as the account that owns the "drop" team
-npx vercel --prod       # first run: pick the "drop" scope, accept the Vite defaults
+npx vercel deploy --prod --yes --scope drop22
 ```
 
-Later deploys are just `npx vercel --prod` again. `npm run build` must be green first.
+`npm run build` must be green first. If the CLI is logged out, `npx vercel login` first.
 
 ## Notes
 

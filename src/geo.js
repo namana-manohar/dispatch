@@ -42,10 +42,7 @@ export async function osrmRoute(points) {
 
 const pointText = (p) => (hasCoords(p) ? `${p.lat},${p.lng}` : p.address || p.name || '')
 
-// Google Maps turn-by-turn link the delivery boy can open on his phone.
-export function googleDirectionsUrl(start, stops) {
-  const pts = [start, ...stops].filter((p) => p && pointText(p))
-  if (pts.length < 2) return null
+function directionsLink(pts) {
   const origin = pointText(pts[0])
   const destination = pointText(pts[pts.length - 1])
   const waypoints = pts.slice(1, -1).map(pointText).join('|')
@@ -54,4 +51,37 @@ export function googleDirectionsUrl(start, stops) {
   return url
 }
 
+// Google Maps turn-by-turn links the delivery boy can open on his phone.
+// Google allows 9 waypoints per link, so a long route becomes several legs:
+// each leg starts where the previous one ended. Returns [{label, url, from, to}].
+export function googleDirectionsLegs(start, stops, backToStart = false) {
+  const hasStart = !!(start && pointText(start))
+  // points: [start?] + stops + [start again?]; stop k sits at index k - 1 + (hasStart ? 1 : 0)
+  const pts = [...(hasStart ? [start] : []), ...stops.filter((p) => p && pointText(p)), ...(backToStart && hasStart ? [start] : [])]
+  if (pts.length < 2) return []
+  const n = stops.length
+  const stopNoAt = (idx) => Math.min(Math.max(idx - (hasStart ? 1 : 0) + 1, 1), n)
+  const MAX = 11 // origin + 9 waypoints + destination
+  const legs = []
+  for (let i = 0; i < pts.length - 1; i += MAX - 1) {
+    const j = Math.min(i + MAX - 1, pts.length - 1)
+    legs.push({ url: directionsLink(pts.slice(i, j + 1)), from: stopNoAt(i === 0 && hasStart ? 1 : i), to: stopNoAt(j) })
+  }
+  return legs.map((l) => ({ ...l, label: legs.length === 1 ? 'Navigate' : `Navigate stops ${l.from}–${l.to}` }))
+}
+
+export const googleDirectionsUrl = (start, stops) => googleDirectionsLegs(start, stops)[0]?.url || null
+
 export const whatsappUrl = (text) => `https://wa.me/?text=${encodeURIComponent(text)}`
+
+// The message a delivery boy gets: stops in order with times, then the
+// navigation link(s). `stops` need arrival, name, address, summary.
+export function routeShareText({ title, person, startTime, start, stops, legs }) {
+  const lines = [
+    `${title}${person ? ' — ' + person : ''} — start ${startTime}${start?.address ? ' from ' + start.address : ''}`,
+    ...stops.map((s, i) => `${i + 1}. ${s.arrival} ${s.name || ''}${s.name && s.address ? ' — ' : ''}${s.address || ''}${s.summary ? ' — ' + s.summary : ''}`),
+  ]
+  if (legs?.length === 1) lines.push(`Navigate: ${legs[0].url}`)
+  else if (legs?.length > 1) legs.forEach((l) => lines.push(`${l.label}: ${l.url}`))
+  return lines.join('\n')
+}

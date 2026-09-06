@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { hasCoords, osrmRoute, googleDirectionsUrl, whatsappUrl } from './geo.js'
+import { hasCoords, osrmRoute, googleDirectionsLegs, routeShareText, whatsappUrl } from './geo.js'
 
 const numberIcon = (n, color) =>
   L.divIcon({
@@ -82,12 +82,8 @@ export default function RouteMap({ vehicle, boy, route, depot, startTime, onClos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pointsKey])
 
-  const navUrl = googleDirectionsUrl(start, route.stops)
-  const shareText = [
-    `Route for ${boy?.name || 'driver'} (${vehicle.type}) — start ${startTime}${start?.address ? ' from ' + start.address : ''}`,
-    ...route.stops.map((s, i) => `${i + 1}. ${s.arrival} ${s.name || ''}${s.name && s.address ? ' — ' : ''}${s.address || ''}${s.summary ? ' — ' + s.summary : ''}`),
-    navUrl ? `Navigation: ${navUrl}` : '',
-  ].filter(Boolean).join('\n')
+  const legs = googleDirectionsLegs(start, route.stops)
+  const shareText = routeShareText({ title: vehicle.type, person: boy?.name, startTime, start, stops: route.stops, legs })
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -98,7 +94,7 @@ export default function RouteMap({ vehicle, boy, route, depot, startTime, onClos
             <p className="hint" style={{ margin: 0 }}>{route.stops.length} stops · finish {route.finishTime}{status ? ` · ${status}` : ''}</p>
           </div>
           <div className="row" style={{ marginTop: 0 }}>
-            {navUrl && <a className="btn-outline" href={navUrl} target="_blank" rel="noreferrer">Open in Google Maps</a>}
+            {legs.map((l) => <a key={l.url} className="btn-outline" href={l.url} target="_blank" rel="noreferrer">{l.label}</a>)}
             {route.stops.length > 0 && <a className="btn-accent" href={whatsappUrl(shareText)} target="_blank" rel="noreferrer">Send on WhatsApp</a>}
             <button className="btn-ghost" onClick={onClose}>Close</button>
           </div>

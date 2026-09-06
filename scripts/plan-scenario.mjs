@@ -43,6 +43,21 @@ pp.routes.forEach((r) => {
   if (ip >= 0 || idl >= 0) console.log(`Pickup at position ${ip + 1}, delivery at ${idl + 1} in route ${r.number}:`, ip >= 0 && idl > ip ? 'OK' : 'WRONG')
 })
 
+// Only 2 boys: the rest goes to hired autos
+show('only 2 boys (autos take the rest)', planRoutes(bikes, { ...common, maxStops: 6, maxHours: 3, people: 2 }))
+
+// Urgent: Yelahanka (far north) and Whitefield-ish Marathahalli must be reached within 2 h
+const urgentSet = new Set(['Yelahanka Builders', 'Marathahalli Decor', 'Kengeri Stores'])
+const withUrgent = bikes.map((d) => (urgentSet.has(d.name) ? { ...d, urgent: true } : d))
+const up = planRoutes(withUrgent, { ...common, maxStops: 8, maxHours: 4, people: 4, urgentHours: 2 })
+show('urgent stops within 2h', up)
+up.routes.forEach((r) => r.stops.forEach((s, i) => { if (s.urgent) console.log(`  urgent ${s.name} at position ${i + 1}, arrives ${s.arrival}${s.late ? ' LATE' : ''}`) }))
+
+// Collect-only (cheque) at Sharma Tiles must come after the drops on its route
+const collect = { ...bikes.find((d) => d.name === 'Sharma Tiles'), id: 'cheque1', clientId: 'cheque-client', jobId: 'cheque1', collect: true, name: 'Cheque at Sharma', workMinutes: 5 }
+const cp = planRoutes([...bikes, collect], { ...common, maxStops: 8, maxHours: 4, people: 4 })
+cp.routes.forEach((r) => { const i = r.stops.findIndex((s) => s.id === 'cheque1'); if (i >= 0) console.log(`\nCheque stop is ${i + 1} of ${r.stops.length} on route ${r.number}:`, i === r.stops.length - 1 ? 'OK (last)' : 'NOT LAST') })
+
 // Bosch must never be split
 for (const [label, plan] of [['fewest', planRoutes(bikes, { ...common, maxStops: 8, maxHours: 4, people: 4 })], ['all', planRoutes(bikes, { ...common, maxStops: 8, maxHours: 4, people: 4, useAll: true })]]) {
   const where = plan.routes.filter((r) => r.stops.some((s) => s.name === 'Bosch')).map((r) => r.number)
