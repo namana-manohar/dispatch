@@ -189,6 +189,7 @@ export default function App() {
     const pc = d.pickupClientId ? clientById(d.pickupClientId) : null
     return {
       ...d, jobId: d.id, kind: 'deliver', name: c.name || '', address: c.address || '', lat: c.lat ?? null, lng: c.lng ?? null,
+      placeId: c.placeId || null, approx: !!c.approx,
       pickupName: pc ? clientLabel(pc) : null, pickupLocated: pc ? hasCoords(pc) : true,
     }
   }), [state.drops, state.clients]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -197,7 +198,7 @@ export default function App() {
     const pc = clientById(d.pickupClientId) || {}
     const pickup = {
       ...d, id: `${d.id}:pickup`, kind: 'pickup', clientId: d.pickupClientId, note: '',
-      name: pc.name || '', address: pc.address || '', lat: pc.lat ?? null, lng: pc.lng ?? null,
+      name: pc.name || '', address: pc.address || '', lat: pc.lat ?? null, lng: pc.lng ?? null, placeId: pc.placeId || null,
       workMinutes: pc.workMinutes ?? 10, deliverTo: d.name || d.address,
     }
     return [pickup, { ...d, after: pickup.id }]
@@ -243,10 +244,12 @@ export default function App() {
       setLocating('')
     } catch (e) { setLocating(e.message) }
   }
-  const pinClient = (id, hit) => setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === id ? { ...c, lat: hit.lat, lng: hit.lng } : c)) }))
-  const applyPick = ({ lat, lng, address }) => {
-    if (picker?.kind === 'depot') setDepotField({ lat, lng, address: address || state.depot.address || 'Starting point' })
-    if (picker?.kind === 'client') setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === picker.id ? { ...c, lat, lng } : c)) }))
+  const pinClient = (id, hit) => setState((s) => ({
+    ...s, clients: s.clients.map((c) => (c.id === id ? { ...c, lat: hit.lat, lng: hit.lng, approx: !!hit.approx, placeId: hit.placeId || c.placeId || null, mapsUrl: hit.mapsUrl || c.mapsUrl || null } : c)),
+  }))
+  const applyPick = ({ lat, lng, address, placeId, mapsUrl }) => {
+    if (picker?.kind === 'depot') setDepotField({ lat, lng, address: address || state.depot.address || 'Starting point', placeId: placeId || null, mapsUrl: mapsUrl || null })
+    if (picker?.kind === 'client') setState((s) => ({ ...s, clients: s.clients.map((c) => (c.id === picker.id ? { ...c, lat, lng, approx: false, placeId: placeId || c.placeId || null, mapsUrl: mapsUrl || c.mapsUrl || null } : c)) }))
     setPicker(null)
     setLocating('')
   }
@@ -257,7 +260,7 @@ export default function App() {
     try {
       const hit = await geocode(c.address || c.name, state.city)
       if (hit) pinClient(id, hit)
-      setLocating(hit ? '' : `Could not find "${c.address || c.name}". Press Pin to place it on the map.`)
+      setLocating(hit ? (hit.approx ? `Found ${clientLabel(c)} on Google Maps, pin is approximate. Press Pin to place it exactly.` : '') : `Could not find "${c.address || c.name}". Press Pin to place it on the map.`)
     } catch (e) { setLocating(e.message) }
   }
   const locateAll = async () => {
@@ -517,7 +520,7 @@ export default function App() {
                     <div className="drop-info">
                       <span>{clientLabel(c)}{c.note ? ` · ${c.note}` : ''}</span>
                       {c.name && c.address && <small>{c.address}</small>}
-                      <small>{hasCoords(c) ? 'on map' : 'not on map yet'}{n ? ` · ${n} drop${n > 1 ? 's' : ''} today` : ''}</small>
+                      <small>{hasCoords(c) ? (c.approx ? 'approximate pin, press Pin to fix' : 'on map') : 'not on map yet'}{n ? ` · ${n} drop${n > 1 ? 's' : ''} today` : ''}</small>
                     </div>
                     <div className="row">
                       {!hasCoords(c) && <button className="btn-ghost" onClick={() => locateClient(c.id)} title="Find this address on the map">Locate</button>}

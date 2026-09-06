@@ -88,7 +88,9 @@ export async function geocode(address, city) {
       const res = await fetch(url)
       if (res.ok) {
         const d = await res.json()
-        if (d.found && d.lat != null) return { lat: d.lat, lng: d.lng, label: d.label || d.address }
+        if (d.found && d.lat != null) {
+          return { lat: d.lat, lng: d.lng, label: `${d.name || a}, ${d.address || ''}`.replace(/, $/, ''), approx: true, placeId: d.placeId || null, mapsUrl: d.mapsUrl || null, address: d.address || null }
+        }
       }
     } catch { /* server route not available */ }
   }
@@ -135,12 +137,19 @@ export const roadRoute = (points) => (googleEnabled ? googleRoute(points, legKey
 
 const pointText = (p) => (hasCoords(p) ? `${p.lat},${p.lng}` : p.address || p.name || '')
 
+// When a stop carries a Google place id (found through Google Maps data),
+// Google navigates to that exact business rather than to the approximate pin.
 function directionsLink(pts) {
   const origin = pointText(pts[0])
-  const destination = pointText(pts[pts.length - 1])
-  const waypoints = pts.slice(1, -1).map(pointText).join('|')
-  let url = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`
-  if (waypoints) url += `&waypoints=${encodeURIComponent(waypoints)}`
+  const dest = pts[pts.length - 1]
+  const mids = pts.slice(1, -1)
+  let url = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(dest.placeId ? (dest.name || dest.address || pointText(dest)) : pointText(dest))}`
+  if (dest.placeId) url += `&destination_place_id=${encodeURIComponent(dest.placeId)}`
+  if (mids.length) {
+    url += `&waypoints=${encodeURIComponent(mids.map((p) => (p.placeId ? (p.name || p.address || pointText(p)) : pointText(p))).join('|'))}`
+    // Google needs one id per waypoint, so only when every stop has one
+    if (mids.every((p) => p.placeId)) url += `&waypoint_place_ids=${encodeURIComponent(mids.map((p) => p.placeId).join('|'))}`
+  }
   return url
 }
 
