@@ -20,6 +20,7 @@ function freshState() {
     clients: [],   // the whole client list, kept across days
     drops: [],     // today's deliveries, each pointing at a client
     people: {},    // route number -> boy id
+    history: [],   // past days: routes sent, who took them
     peopleToday: 4,
     autosToday: 0,
     portersToday: 0,
@@ -114,7 +115,8 @@ export default function App() {
   const [importError, setImportError] = useState('')
   const [mapRouteNo, setMapRouteNo] = useState(null)
   const [locating, setLocating] = useState('')
-  const [showSetup, setShowSetup] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [openDay, setOpenDay] = useState(null)
   const [picker, setPicker] = useState(null) // { kind: 'depot' } | { kind: 'client', id }
   const fileRef = useRef(null)
 
@@ -355,11 +357,33 @@ export default function App() {
   }))
   const clientOptions = [...state.clients].sort((a, b) => clientLabel(a).localeCompare(clientLabel(b)))
   const resetPins = () => setState((s) => ({ ...s, drops: s.drops.map((d) => ({ ...d, pin: null })) }))
+  // Keep today's plan in History: each route, its stops in order, who took it.
+  const snapshotDay = () => ({
+    id: uid(),
+    date: new Date().toISOString().slice(0, 10),
+    savedAt: new Date().toISOString(),
+    drops: state.drops.length,
+    boxes: state.drops.reduce((sum, d) => sum + boxesOfLines(d.lines), 0),
+    bySize: sizeBreakdown(state.drops),
+    routes: plan.routes.map((r) => ({
+      label: r.label, kind: r.kind,
+      person: state.boys.find((b) => b.id === state.people[r.number])?.name || null,
+      km: Math.round(r.totalKm * 10) / 10, min: Math.round(r.totalMin), backTime: r.hasStart ? r.backTime : r.finishTime,
+      stops: r.stops.map((st) => ({ title: stopTitle(st), address: stopSub(st) || '', arrival: st.arrival, boxes: describeLines(st.lines) })),
+    })),
+  })
+  const saveDay = () => {
+    if (!state.drops.length) return
+    const snap = snapshotDay()
+    setState((s) => ({ ...s, history: [snap, ...(s.history || []).filter((h) => h.date !== snap.date)] }))
+  }
   const clearDrops = () => {
-    if (state.drops.length && window.confirm("Clear today's drops? The client list, boys and box sizes stay.")) {
-      setState((s) => ({ ...s, drops: [], people: {} }))
+    if (state.drops.length && window.confirm("Clear today's drops? Today's routes are kept in History. The client list, boys and box sizes stay.")) {
+      const snap = snapshotDay()
+      setState((s) => ({ ...s, drops: [], people: {}, history: [snap, ...(s.history || []).filter((h) => h.date !== snap.date)] }))
     }
   }
+  const deleteDay = (id) => setState((s) => ({ ...s, history: (s.history || []).filter((h) => h.id !== id) }))
   const setRoutePerson = (routeNo, boyId) => setState((s) => ({ ...s, people: { ...s.people, [routeNo]: boyId || null } }))
 
   // --- import (into the client list)
@@ -449,7 +473,7 @@ export default function App() {
     <div className="app">
       {session && (
         <div className="account-bar">
-          <span>{session.user.email}</span>
+          <button className="btn-link inline" onClick={() => setProfileOpen(true)}>{session.user.email}</button>
           {syncMsg ? <span className="warn-text">{syncMsg}</span> : <span className="lp-ok">saved to the cloud</span>}
           <button className="btn-ghost" onClick={signOut}>Sign out</button>
         </div>
@@ -577,50 +601,8 @@ export default function App() {
           </section>
 
           <section className="block">
-            <button className="btn-link" onClick={() => setShowSetup((v) => !v)}>{showSetup ? '▾ Hide setup' : '▸ Setup: city, delivery boys, box sizes'}</button>
-            {showSetup && (
-              <>
-                <h2 style={{ marginTop: 12 }}>City</h2>
-                <div className="row" style={{ marginTop: 0 }}>
-                  <input placeholder="City (helps address lookup)" value={state.city}
-                    onChange={(e) => setState((s) => ({ ...s, city: e.target.value }))} />
-                </div>
-                <p className="hint">Added to every address lookup so "4th Block Jayanagar" finds the right city.</p>
-
-                <h2 style={{ marginTop: 20 }}>Delivery boys</h2>
-                <div className="row" style={{ marginTop: 0 }}>
-                  <input placeholder="Name" value={boyName} onChange={(e) => setBoyName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && addBoy()} />
-                  <button className="btn-accent" onClick={addBoy}>Add</button>
-                </div>
-                <ul className="list">
-                  {state.boys.map((b) => (
-                    <li key={b.id}>
-                      <span>{b.name}</span>
-                      <button className="btn-ghost" onClick={() => removeBoy(b.id)}>Remove</button>
-                    </li>
-                  ))}
-                  {state.boys.length === 0 && <li className="empty">Optional. Names let you put a person on each route.</li>}
-                </ul>
-
-                <h2 style={{ marginTop: 20 }}>Box sizes</h2>
-                <div className="row" style={{ marginTop: 0 }}>
-                  <input placeholder="Size name (e.g. Tile box)" value={sizeName}
-                    onChange={(e) => setSizeName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addSize()} />
-                  <button className="btn-accent" onClick={addSize}>Add</button>
-                </div>
-                <ul className="list">
-                  {state.materials.map((m) => (
-                    <li key={m.id}>
-                      <span>{m.name}</span>
-                      <label className="check" title="Boxes of this size go on the Porter, not on a bike"><input type="checkbox" checked={!!m.porter} onChange={() => toggleSizePorter(m.id)} /> by Porter</label>
-                      <button className="btn-ghost" onClick={() => removeSize(m.id)} disabled={state.materials.length <= 1}>×</button>
-                    </li>
-                  ))}
-                </ul>
-                <p className="hint">Tick "by Porter" on sizes too big for a bike. Those drops always go on a Porter trip (Porters and autos are booked as needed).</p>
-              </>
-            )}
+            <button className="btn-outline" style={{ width: '100%' }} onClick={() => setProfileOpen(true)}>Profile &amp; settings</button>
+            <p className="hint">Starting point, city, delivery boys, box sizes, and the history of past days.</p>
           </section>
         </aside>
 
@@ -764,6 +746,101 @@ export default function App() {
           })}
         </main>
       </div>
+
+      {profileOpen && (
+        <div className="modal-backdrop" onClick={() => setProfileOpen(false)}>
+          <div className="modal modal-profile" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Profile &amp; settings</h2>
+              <button className="btn-ghost" onClick={() => setProfileOpen(false)}>Close</button>
+            </div>
+
+            <h3 className="ph">Account</h3>
+            {session ? (
+              <div className="row" style={{ alignItems: 'center' }}>
+                <span style={{ flex: 1 }}>{session.user.email}</span>
+                <button className="btn-outline" onClick={signOut}>Sign out</button>
+              </div>
+            ) : <p className="hint">No account: data stays in this browser only.</p>}
+
+            <h3 className="ph">Starting point</h3>
+            <div className="row">
+              <input placeholder="Where the boys load and start" value={state.depot.address}
+                onChange={(e) => setDepotField({ address: e.target.value, lat: null, lng: null })}
+                onKeyDown={(e) => e.key === 'Enter' && locateDepot()} />
+              {!hasCoords(state.depot) && <button className="btn-accent" onClick={locateDepot} disabled={!state.depot.address.trim()}>Locate</button>}
+              <button className="btn-outline" onClick={() => { setProfileOpen(false); setPicker({ kind: 'depot' }) }}>Change on map</button>
+            </div>
+            <p className="hint">{hasCoords(state.depot) ? 'On the map. Every route starts and ends here.' : 'Not on the map yet.'}</p>
+
+            <h3 className="ph">City</h3>
+            <div className="row">
+              <input placeholder="City (helps address lookup)" value={state.city}
+                onChange={(e) => setState((s) => ({ ...s, city: e.target.value }))} />
+            </div>
+
+            <h3 className="ph">Delivery boys</h3>
+            <div className="row">
+              <input placeholder="Name" value={boyName} onChange={(e) => setBoyName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addBoy()} />
+              <button className="btn-accent" onClick={addBoy}>Add</button>
+            </div>
+            <ul className="list">
+              {state.boys.map((b) => (
+                <li key={b.id}>
+                  <span>{b.name}</span>
+                  <button className="btn-ghost" onClick={() => removeBoy(b.id)}>Remove</button>
+                </li>
+              ))}
+              {state.boys.length === 0 && <li className="empty">Names let you put a person on each route.</li>}
+            </ul>
+
+            <h3 className="ph">Box sizes</h3>
+            <div className="row">
+              <input placeholder="Size name (e.g. Tile box)" value={sizeName}
+                onChange={(e) => setSizeName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addSize()} />
+              <button className="btn-accent" onClick={addSize}>Add</button>
+            </div>
+            <ul className="list">
+              {state.materials.map((m) => (
+                <li key={m.id}>
+                  <span>{m.name}</span>
+                  <label className="check" title="Boxes of this size go on the Porter, not on a bike"><input type="checkbox" checked={!!m.porter} onChange={() => toggleSizePorter(m.id)} /> by Porter</label>
+                  <button className="btn-ghost" onClick={() => removeSize(m.id)} disabled={state.materials.length <= 1}>×</button>
+                </li>
+              ))}
+            </ul>
+            <p className="hint">Tick "by Porter" on sizes too big for a bike. Those drops always go on a Porter trip.</p>
+
+            <h3 className="ph">History</h3>
+            <p className="hint">Each day is saved here when you press Clear day.{state.drops.length > 0 && <> <button className="btn-link inline" onClick={saveDay}>Save today's plan now</button></>}</p>
+            <ul className="list">
+              {(state.history || []).map((h) => (
+                <li key={h.id} className="day-row">
+                  <div className="drop-info" style={{ flex: 1, cursor: 'pointer' }} onClick={() => setOpenDay(openDay === h.id ? null : h.id)}>
+                    <span>{new Date(h.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                    <small>{h.routes.length} route{h.routes.length === 1 ? '' : 's'} · {h.drops} drops · {h.boxes} boxes{h.bySize ? ` (${h.bySize})` : ''} · {openDay === h.id ? 'hide' : 'show routes'}</small>
+                    {openDay === h.id && (
+                      <div className="day-routes">
+                        {h.routes.map((r, i) => (
+                          <div key={i} className="day-route">
+                            <b>{r.label}{r.person ? ` · ${r.person}` : ''}</b> <small>{r.km} km · {r.min} min · back {r.backTime}</small>
+                            <ol>
+                              {r.stops.map((st, j) => <li key={j}>{st.arrival} {st.title}{st.address ? ` · ${st.address}` : ''} <small>· {st.boxes}</small></li>)}
+                            </ol>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button className="btn-ghost" onClick={() => deleteDay(h.id)} title="Remove this day from history">×</button>
+                </li>
+              ))}
+              {(state.history || []).length === 0 && <li className="empty">No days saved yet.</li>}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {picker && (
         <LocationPicker

@@ -463,3 +463,10 @@ a.btn-outline, a.btn-accent { text-decoration: none; display: inline-flex; align
 .map-frame { position: relative; }
 .center-pin { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%); z-index: 500; pointer-events: none; display: flex; flex-direction: column; align-items: center; }
 .center-pin-tail { width: 2px; height: 14px; background: #F2A93B; }
+.modal-profile { width: min(720px, 100%); }
+.ph { font-size: 14px; font-weight: 600; margin: 22px 0 6px; letter-spacing: 0.02em; }
+.day-row { align-items: flex-start; }
+.day-routes { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.day-route { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+.day-route ol { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; color: var(--text); }
+.day-route small, .day-route li small { color: var(--muted); font-size: 11px; }
