@@ -1,0 +1,51 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><title>Dispatch Planner Guide</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:wght@800&display=swap">
+<style>
+  :root { --bg:#F3F5F8; --paper:#FFFFFF; --ink:#17233B; --muted:#5B6578; --line:#D9DEE7; --accent:#D98E0B; --accent-ink:#1A1206; --warn:#B5432A; --warn-soft:#FAE6E1; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#151A21; --paper:#1D242E; --ink:#EDEFF2; --muted:#9AA3B2; --line:#2C3644; --accent:#F2A93B; --accent-ink:#1A1206; --warn:#F08A72; --warn-soft:#3B221C; } }
+  :root[data-theme="dark"] { --bg:#151A21; --paper:#1D242E; --ink:#EDEFF2; --muted:#9AA3B2; --line:#2C3644; --accent:#F2A93B; --accent-ink:#1A1206; --warn:#F08A72; --warn-soft:#3B221C; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:'Atkinson Hyperlegible','Segoe UI',system-ui,sans-serif; font-size:20px; line-height:1.5; }
+  .page { max-width:560px; margin:0 auto; padding:24px 16px 56px; }
+  h1,h2 { font-family:'Bricolage Grotesque',sans-serif; font-weight:800; margin:0; text-wrap:balance; line-height:1.15; }
+  h1 { font-size:32px; }
+  h2 { font-size:22px; margin-top:36px; }
+  .open { display:block; margin-top:14px; background:var(--paper); border:2px solid var(--accent); border-radius:14px; padding:16px 18px; color:var(--ink); text-decoration:none; font-family:'Bricolage Grotesque',sans-serif; font-size:22px; word-break:break-all; }
+  ol { list-style:none; margin:14px 0 0; padding:0; display:flex; flex-direction:column; gap:10px; counter-reset:s; }
+  li { counter-increment:s; display:grid; grid-template-columns:40px 1fr; gap:12px; align-items:center; background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:14px 16px 14px 12px; }
+  li::before { content:counter(s); font-family:'Bricolage Grotesque',sans-serif; font-weight:800; font-size:20px; background:var(--accent); color:var(--accent-ink); width:36px; height:36px; border-radius:9px; display:flex; align-items:center; justify-content:center; }
+  .b { display:inline-block; font-weight:700; font-size:17px; padding:2px 10px; border-radius:7px; background:var(--accent); color:var(--accent-ink); white-space:nowrap; }
+  .g { display:inline-block; font-weight:700; font-size:17px; padding:2px 10px; border-radius:7px; border:2px solid var(--line); white-space:nowrap; }
+  small { display:block; color:var(--muted); font-size:16px; margin-top:2px; }
+  .fix { margin-top:12px; background:var(--warn-soft); border-radius:12px; padding:12px 16px; font-size:18px; }
+  .fix b { color:var(--warn); }
+</style>
+<div class="page">
+  <h1>Dispatch Planner</h1>
+  <a class="open" href="https://dispatch-seven-xi.vercel.app">dispatch-seven-xi.vercel.app</a>
+  <small>Chrome → ⋮ → “Add to Home screen”. Then it opens like an app.</small>
+
+  <h2>Every morning</h2>
+  <ol>
+    <li><div>Top bar: type <b>People today</b>, <b>Autos today</b>, <b>Porters today</b>.</div></li>
+    <li><div>On each client getting a delivery, press <span class="b">Send today</span>.<small>Type box size and number. Tick <b>⚡ Urgent</b> if it must reach fast.</small></div></li>
+    <li><div>Read the answer: <b>“Send 3 people on 3 routes + 1 Porter”</b>.<small>If it says “book 2 more autos”, book them and change the number.</small></div></li>
+    <li><div>On each route card, choose <span class="g">Who takes this?</span></div></li>
+    <li><div>Press <span class="b">WhatsApp</span> on the card to send the boy his route.<small>He presses <b>Navigate</b> in the message. Google Maps takes him stop by stop.</small></div></li>
+    <li><div>Evening: press <span class="g">Clear day</span>.</div></li>
+  </ol>
+
+  <h2>Symbols</h2>
+  <ol>
+    <li><div><b>⚡</b> Urgent. Goes first. <b>LATE</b> in red = cannot reach in time.</div></li>
+    <li><div><b>Route 1, 2, 3</b> = a boy. <b>Auto</b> = hired auto. <b>Porter</b> = Porter trip.</div></li>
+    <li><div><span class="g">Map</span> see the route. <span class="g">Navigate</span> open in Google Maps. <span class="g">Move…</span> send a stop to another route.</div></li>
+  </ol>
+
+  <h2>If a client is “not on map yet”</h2>
+  <div class="fix"><b>Press Locate.</b> Still not found? Press <b>Pin</b>, move the map until the pin is on the shop, press <b>Save</b>. Done once, remembered forever.</div>
+
+  <h2>Same shop, two gates</h2>
+  <div class="fix">Press <b>Send today</b> on that client twice. Write the gate name each time.</div>
+</div>
+</body></html>

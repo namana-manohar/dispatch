@@ -23,7 +23,13 @@ Live: https://dispatch-seven-xi.vercel.app
 
 Road distances and times come from OpenStreetMap routing once a route's map has been opened; before that the estimate uses straight-line distance and the average speed setting. Box sizes are labels only. The app does not decide what fits on which vehicle; the owner does.
 
-Data is saved in the browser (localStorage). No login, no server. Address lookup uses OpenStreetMap's Nominatim, road routing the public OSRM server. Both are free and rate-limited, so lookups run one per second.
+## Accounts and sync
+
+Sign in with email and password (Supabase). Everything is saved to the account within a second, so any phone or laptop signed in with the shop login sees the same clients and today's plan. Without the two `VITE_SUPABASE_*` variables the app runs in local-only mode (data stays in that browser). Schema: `supabase/schema.sql`.
+
+## Finding shops by name
+
+Address lookup uses OpenStreetMap's Nominatim, then a name-friendly search (Photon). When neither knows a shop, the server route `api/place.js` asks Gemini with Google Maps grounding (needs `GEMINI_API_KEY` as a server-side secret) and returns the Google Maps address, place id and link. The pin from that is approximate and flagged; navigation links use the place id so the delivery boy is sent to the exact business. Road routing uses the public OSRM server. These services are rate-limited, so lookups run one per second.
 
 ## Google Maps (optional, recommended)
 
